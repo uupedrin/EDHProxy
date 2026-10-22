@@ -24,6 +24,7 @@
 - **A Custom folder in "Change Printing".** Every card keeps a folder with all the arts you have uploaded for it. Pick one, then **Confirm** — just like choosing a printing.
 - **Shared in game.** Players in the same room who use EDHProxy see your arts on *your* cards, and you see theirs on *their* cards. Everyone else sees the normal cards.
 - **Local names.** Give each art a name to tell them apart. Names stay in your browser.
+- **Foil.** Mark any card as foil (custom art or not) from its menu or with the **F** key; it gets the same rainbow sheen Archidekt uses, and players in your room see it too.
 - **Follows the site's language.** English, Spanish, Italian, German, French, Portuguese, Japanese and Dutch — the same languages edhplay offers.
 - **One-click updates.** A badge on the toolbar icon tells you when there's a new version.
 
@@ -69,6 +70,10 @@ Choosing a different printing and confirming switches the card back to normal ar
 
 The popup (click the extension icon) shows whether you're in a room, who else has the extension, your arts, and lets you export/import them.
 
+### Foil
+
+On your deck page, open a card's menu (right-click or the **⋮** button) and choose **Foil**, or hover the card and press **F**. Do the same again to remove it. Foil applies to all your copies of the card, with or without custom art, and is shared with players in your room like arts are. You can turn the feature off in the popup (**Allow foil**).
+
 ## How sharing works
 
 - In a game (`/games/<room>/play` or `/spectate`), EDHProxy joins a channel on [ntfy.sh](https://ntfy.sh), a free public pub/sub service. The channel name is a hash of the room ID.
@@ -76,6 +81,7 @@ The popup (click the extension icon) shows whether you're in a room, who else ha
 - **Arts only apply to their owner's cards.** EDHProxy reads each card's owner from the game, so if you and a friend play the same card, each copy shows its owner's art.
 - **Local files** stay in your browser. During a game, when another player with EDHProxy is in the room and the card is on the table, a temporary copy is uploaded to [litterbox.catbox.moe](https://litterbox.catbox.moe) (deleted after 1 hour) and that link is shared. Each game uploads again; long games renew it. Turn this off in the popup (**Share local files**) to keep local files to yourself.
 - **Image URLs** are shared as they are, with no upload. Discord links expire, so prefer hosts like imgur or catbox.
+- **Google Drive** share links (`drive.google.com/file/d/…`) work too: EDHProxy turns them into a direct image link. Share the file with **Anyone with the link**, or other players (and even you) won't be able to load it.
 - Usernames shown in the popup are read from the game on your computer; they are never sent through the channel. Art names never leave your browser.
 - Anyone who knows a room ID could read its channel, so don't use private images.
 - You can use another ntfy server (e.g. self-hosted) in the popup under **Advanced**; everyone in the room must use the same one.

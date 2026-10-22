@@ -31,6 +31,49 @@ async function litterbox(dataUrl) {
   return text;
 }
 
+// Paints Archidekt's foil overlay: linear-gradient(-60deg, purple, blue, green, yellow, red) at
+// 15% opacity, following the CSS rules for where an angled gradient line starts and ends.
+function paintFoil(ctx, w, h) {
+  const angle = (-60 * Math.PI) / 180;
+  const dx = Math.sin(angle), dy = -Math.cos(angle);
+  const half = (Math.abs(w * dx) + Math.abs(h * dy)) / 2;
+  const cx = w / 2, cy = h / 2;
+  const g = ctx.createLinearGradient(cx - dx * half, cy - dy * half, cx + dx * half, cy + dy * half);
+  ['purple', 'blue', 'green', 'yellow', 'red'].forEach((color, i) => g.addColorStop(i / 4, color));
+  ctx.globalAlpha = 0.15;
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, w, h);
+  ctx.globalAlpha = 1;
+}
+
+// Renders a card image for display: shrunk to the width Scryfall would serve for that spot (a big
+// image squeezed straight into a thumbnail looks jagged) and/or with the foil overlay. Returns
+// null when nothing needs to change (no foil and already about that size).
+async function renderImage(url, width, foil) {
+  const blob = await (await fetch(url, { credentials: 'omit' })).blob();
+  const full = await createImageBitmap(blob);
+  const shrink = width && full.width > width * 1.2;
+  if (!shrink && !foil) { full.close(); return null; }
+  let bitmap = full;
+  if (shrink) {
+    const height = Math.round(full.height * width / full.width);
+    full.close();
+    bitmap = await createImageBitmap(blob, { resizeWidth: width, resizeHeight: height, resizeQuality: 'high' });
+  }
+  const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(bitmap, 0, 0);
+  bitmap.close();
+  if (foil) paintFoil(ctx, canvas.width, canvas.height);
+  const out = await canvas.convertToBlob({ type: 'image/webp', quality: 0.92 });
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(out);
+  });
+}
+
 async function publish(url, body) {
   const res = await fetch(url, { method: 'POST', body });
   if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -117,6 +160,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (msg.type === 'cardInfo') sendResponse({ ok: true, ...(await cardInfo(msg.id)) });
       else if (msg.type === 'publish') sendResponse({ ok: await publish(msg.url, msg.body) });
       else if (msg.type === 'litterbox') sendResponse({ ok: true, url: await litterbox(msg.dataUrl) });
+      else if (msg.type === 'render') sendResponse({ ok: true, url: await renderImage(msg.url, msg.width, msg.foil) });
       else sendResponse({ ok: false, error: 'unknown message' });
     } catch (e) {
       sendResponse({ ok: false, error: String(e && e.message || e) });

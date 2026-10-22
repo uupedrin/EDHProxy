@@ -5,7 +5,7 @@
   const CARD_RX = /^https:\/\/cards\.scryfall\.io\/([a-z_]+)\/(front|back)\/[0-9a-f]\/[0-9a-f]\/([0-9a-f-]{36})\./i;
   const ROOM_RX = /^\/games\/([^/]+)\/(?:play|spectate)/;
   const CHUNK_CHARS = 3000; // ntfy turns messages > 4096 bytes into attachments
-  const DEFAULT_SETTINGS = { syncEnabled: true, showOthers: true, uploadLocal: true, server: 'https://ntfy.sh' };
+  const DEFAULT_SETTINGS = { syncEnabled: true, showOthers: true, uploadLocal: true, foilEnabled: true, server: 'https://ntfy.sh' };
 
   // UI language follows edhplay's own setting (its i18next keeps it in localStorage).
   function siteLang() {
@@ -20,9 +20,10 @@
   let settings = { ...DEFAULT_SETTINGS };
   let ownArts = {};    // key -> { u, m, label, t }   key = "id:<uuid>/<face>" | "name:<lowercase name>"
   let library = {};    // lowercase card name -> [{ id, u, m, t }]  every art uploaded for that card
+  let ownFoils = {};   // lowercase card name -> true   cards shown with the foil overlay
   let nameCache = {};  // uuid -> [frontName, backName]
   let clientId = null;
-  const remote = new Map();      // clientId -> { player, arts, rev, pend }
+  const remote = new Map();      // clientId -> { player, arts, foils: Set<name>, rev, pend }
   const pendingNames = new Set();
 
   const send = (msg) => new Promise((resolve, reject) => {
@@ -45,10 +46,15 @@
     return names ? names[face === 'back' ? 1 : 0] : null;
   }
 
+  // Whether some art or foil is keyed by card name, so images need their card's name looked up.
   function hasNameKeys() {
     if (Object.keys(ownArts).some(k => k.startsWith('name:'))) return true;
+    if (settings.foilEnabled && Object.keys(ownFoils).length) return true;
     if (!settings.showOthers || !sync) return false;
-    for (const p of remote.values()) if (Object.keys(p.arts).some(k => k.startsWith('name:'))) return true;
+    for (const p of remote.values()) {
+      if (Object.keys(p.arts).some(k => k.startsWith('name:'))) return true;
+      if (settings.foilEnabled && p.foils.size) return true;
+    }
     return false;
   }
 
@@ -88,13 +94,33 @@
 
     const me = myPlayer();
     if (owner === me) return own;
-    let peer = null;
-    if (sync && settings.showOthers) {
-      for (const p of remote.values()) if (p.player === owner && (!peer || p.rev > peer.rev)) peer = p;
-    }
+    const peer = peerFor(owner);
     if (peer) return peer.arts[idKey] || (nameKey && peer.arts[nameKey]) || null;
     // Until we know who we are, cards no peer claims are assumed to be ours.
     return me ? null : own;
+  }
+
+  // The room peer whose player owns a card (latest announcement wins).
+  function peerFor(owner) {
+    if (!sync || !settings.showOthers) return null;
+    let peer = null;
+    for (const p of remote.values()) if (p.player === owner && (!peer || p.rev > peer.rev)) peer = p;
+    return peer;
+  }
+
+  // Foil follows the same ownership rules as arts, by card name.
+  function findFoil(id, face, owner) {
+    if (!settings.foilEnabled) return false;
+    const nm = faceName(id, face);
+    if (!nm) return false;
+    const name = nm.toLowerCase();
+    const own = !!ownFoils[name];
+    if (!currentRoom() || !owner) return own;
+    const me = myPlayer();
+    if (owner === me) return own;
+    const peer = peerFor(owner);
+    if (peer) return peer.foils.has(name);
+    return me ? false : own;
   }
 
   async function lookupName(id) {
@@ -131,12 +157,45 @@
 
   // ---------- DOM patching ----------
 
+  // Google Drive share links (…/file/d/<id>/view, open?id=, uc?id=) open a viewer page, not the
+  // image. lh3.googleusercontent.com serves the file itself, as long as it is shared with
+  // "Anyone with the link".
+  const DRIVE_RX = /^https:\/\/drive\.google\.com\/(?:file\/d\/|(?:open|uc)\?(?:[^#]*&)?id=)([\w-]{20,})/i;
+  const isDriveLink = (url) => DRIVE_RX.test(url || '');
+  function directImageUrl(url) {
+    const m = (url || '').match(DRIVE_RX);
+    return m ? `https://lh3.googleusercontent.com/d/${m[1]}` : url;
+  }
+
   // Places that show only the illustration (deck covers) use Scryfall's art_crop. Custom arts are
   // whole cards, so crop them to the art window of a modern frame (fractions of the card image).
   const ART_CROP_VIEW = 'inset(10.9% 7.4% 44.3% 7.2%)';
   function setArtCrop(img, on) {
     if (on) img.style.setProperty('object-view-box', ART_CROP_VIEW);
     else if (img.style.getPropertyValue('object-view-box')) img.style.removeProperty('object-view-box');
+  }
+
+  // Scryfall serves each spot an image of about the size it is shown at; custom arts get copies of
+  // the same widths (rendered once, in the background) so small thumbnails don't look jagged.
+  // The same step paints the foil overlay. art_crop is wide because deck covers crop the custom
+  // card down to its art box.
+  const SIZE_WIDTH = { small: 146, normal: 488, border_crop: 480, large: 672, png: 745, art_crop: 745 };
+  const rendered = new Map(); // `${foil}|${width}|${url}` -> data URL, or null = use url as is
+
+  function renderedUrl(url, size, foil) {
+    const width = SIZE_WIDTH[size] || 0;
+    if (!width && !foil) return url;
+    const key = `${foil ? 'foil' : 'plain'}|${width}|${url}`;
+    if (rendered.has(key)) return rendered.get(key) || url;
+    rendered.set(key, null);
+    send({ type: 'render', url, width, foil })
+      .then((res) => {
+        if (!res.url) return;
+        rendered.set(key, res.url);
+        scheduleScan(); // every image showing this card picks up the rendered copy
+      })
+      .catch((e) => console.warn('[EDHProxy] render failed, using the image as is', url, e));
+    return url;
   }
 
   function processImg(img) {
@@ -164,23 +223,26 @@
     const card = parseCard(orig);
     if (!card) return;
 
-    const art = findArt(card.id, card.face, img.dataset.eaOwner || null);
-    if (!art) {
+    if (!(card.id in nameCache) && hasNameKeys()) lookupName(card.id);
+    const owner = img.dataset.eaOwner || null;
+    const art = findArt(card.id, card.face, owner);
+    const foil = findFoil(card.id, card.face, owner);
+    if (!art && !foil) {
       if (img.dataset.eaSrc) {
         delete img.dataset.eaSrc;
         setArtCrop(img, false);
         img.src = orig;
       }
-      if (!(card.id in nameCache) && hasNameKeys()) lookupName(card.id);
       return;
     }
 
-    img.dataset.eaSrc = art.u;
+    const url = renderedUrl(art ? directImageUrl(art.u) : orig, card.size, foil);
+    img.dataset.eaSrc = url;
     img.removeAttribute('srcset');
-    setArtCrop(img, card.size === 'art_crop');
-    if (src !== art.u) img.src = art.u;
+    setArtCrop(img, !!art && card.size === 'art_crop');
+    if (src !== url) img.src = url;
     // Only our own arts can be local files (remote ones are always https).
-    if (art.u.startsWith('data:') && sync) {
+    if (art && art.u.startsWith('data:') && sync) {
       wanted.add(art.u);
       shareLocalArts();
     }
@@ -313,7 +375,7 @@
     if (!Number.isInteger(msg.i) || !Number.isInteger(msg.t) || msg.t < 1 || msg.t > 200 || !Array.isArray(msg.e)) return;
 
     const isNew = !remote.has(msg.c);
-    const p = remote.get(msg.c) || { player: null, arts: {}, rev: -1, pend: null };
+    const p = remote.get(msg.c) || { player: null, arts: {}, foils: new Set(), rev: -1, pend: null };
     remote.set(msg.c, p);
     if (msg.r < p.rev || (msg.r === p.rev && !p.pend)) return;
     if (!p.pend || p.pend.r !== msg.r) p.pend = { r: msg.r, parts: new Map() };
@@ -321,14 +383,21 @@
 
     if (p.pend.parts.size === msg.t) {
       const arts = {};
+      const foils = new Set();
       for (const part of p.pend.parts.values()) {
         for (const e of part) {
+          // Foils travel as ["foil:<name>", "", "foil"]; older versions skip them (no URL).
+          if (Array.isArray(e) && typeof e[0] === 'string' && /^foil:.{1,200}$/.test(e[0])) {
+            foils.add(e[0].slice(5).toLowerCase());
+            continue;
+          }
           if (!Array.isArray(e) || typeof e[0] !== 'string' || !validRemoteUrl(e[1])) continue;
           if (!/^(id:[0-9a-f-]{36}\/(front|back)|name:.{1,200})$/.test(e[0])) continue;
           arts[e[0]] = { u: e[1], m: 'full', t: msg.r };
         }
       }
       p.arts = arts;
+      p.foils = foils;
       p.rev = msg.r;
       p.pend = null;
       p.player = typeof msg.p === 'string' && msg.p.length <= 100 ? msg.p : null;
@@ -384,6 +453,7 @@
       const u = a.u.startsWith('data:') ? (settings.uploadLocal && hostedUrl(a.u)) : a.u;
       if (validRemoteUrl(u)) entries.push([k, u, a.m]);
     }
+    if (settings.foilEnabled) for (const name of Object.keys(ownFoils)) entries.push(['foil:' + name, '', 'foil']);
     const chunks = [[]];
     let size = 0;
     for (const e of entries) {
@@ -518,7 +588,7 @@
               <label class="field">${t('nameLabel')} <span class="hint">${t('nameHint')}</span>
                 <input type="text" class="name" maxlength="40" placeholder="${t('namePlaceholder')}" spellcheck="false">
               </label>
-              <label class="field">${t('urlLabel')}
+              <label class="field">${t('urlLabel')} <span class="hint">${t('urlHint')}</span>
                 <input type="text" class="url" placeholder="https://i.imgur.com/....png" spellcheck="false">
               </label>
               <label class="field">${t('fileLabel')}
@@ -550,7 +620,7 @@
     for (const type of ['keydown', 'keyup', 'keypress']) root.addEventListener(type, (e) => e.stopPropagation());
     $('.cancel').onclick = close;
 
-    const source = () => fileData || urlInput.value.trim();
+    const source = () => fileData || directImageUrl(urlInput.value.trim());
 
     async function updatePreview() {
       const seq = ++previewSeq;
@@ -562,7 +632,7 @@
         await loadImage(u);
         if (seq === previewSeq) prev.src = u;
       } catch (e) {
-        if (seq === previewSeq) warn.textContent = t('errLoad');
+        if (seq === previewSeq) warn.textContent = t(isDriveLink(urlInput.value.trim()) ? 'errDrive' : 'errLoad');
       }
     }
 
@@ -811,7 +881,7 @@
         const active = activeArtFor(name);
         const entry = active && list.find(e => e.u === active.u);
         const bg = root.querySelector('.bg');
-        if (active) { if (bg.getAttribute('src') !== active.u) bg.src = active.u; } else bg.removeAttribute('src');
+        if (active) { const u = directImageUrl(active.u); if (bg.getAttribute('src') !== u) bg.src = u; } else bg.removeAttribute('src');
         box.classList.toggle('has-art', !!active);
         root.querySelector('.cap').textContent = active ? ((entry && entry.n) || t('customArt')) : t('yourArts');
         box.classList.toggle('active', !!active);
@@ -1038,7 +1108,7 @@
         for (const entry of list) {
           const local = entry.u.startsWith('data:') ? t('localFile') : null;
           const el = item({
-            cls: (isActive(name, entry) ? 'active' : '') + selected(entry), thumb: img(entry.u),
+            cls: (isActive(name, entry) ? 'active' : '') + selected(entry), thumb: img(directImageUrl(entry.u)),
             caption: entry.n || t('unnamed'), meta: local,
             title: t('chooseArt'), onClick: () => choose(ctx, entry),
             onDelete: () => deleteFromLibrary(name, entry),
@@ -1091,6 +1161,98 @@
     setTimeout(() => el.remove(), 6600);
   }
 
+  // ---------- foil toggle on deck pages: card menu item and the F key ----------
+
+  // Deck cards are [data-deck-card-id] elements holding the card's Scryfall image.
+  const deckCardOf = (el) => (el && el.closest ? el.closest('[data-deck-card-id]') : null);
+  let hoveredCard = null;   // deck card under the pointer, for the F key
+  let menuCard = null;      // deck card whose menu was just opened: { el, at }
+
+  function cardOfDeckElement(el) {
+    for (const img of el.querySelectorAll('img')) {
+      const card = parseCard(img.dataset.eaOrig || img.getAttribute('src'));
+      if (card) return card;
+    }
+    return null;
+  }
+
+  async function foilNameOf(card) {
+    const names = await lookupName(card.id);
+    return names ? names[card.face === 'back' ? 1 : 0].toLowerCase() : null;
+  }
+
+  async function toggleFoil(card) {
+    const name = await foilNameOf(card);
+    if (!name) return;
+    if (ownFoils[name]) delete ownFoils[name]; else ownFoils[name] = true;
+    await chrome.storage.local.set({ foils: ownFoils });
+  }
+
+  const foilActive = () => settings.foilEnabled && onDeckPage();
+
+  document.addEventListener('pointerover', (e) => { hoveredCard = deckCardOf(e.target); }, true);
+
+  document.addEventListener('keydown', (e) => {
+    if ((e.key !== 'f' && e.key !== 'F') || e.ctrlKey || e.metaKey || e.altKey || e.repeat || !foilActive()) return;
+    const target = e.target;
+    if (target && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName))) return;
+    if (document.querySelector('[role="dialog"][data-state="open"]')) return;
+    const card = hoveredCard && hoveredCard.isConnected && cardOfDeckElement(hoveredCard);
+    if (!card) return;
+    e.preventDefault();
+    e.stopPropagation();
+    toggleFoil(card);
+  }, true);
+
+  // edhplay's card menu (Ark/Chakra) has no hook for extra items, so a "Foil" item is cloned from
+  // one of its own (same look, with the F shortcut) and handled entirely by us.
+  for (const type of ['pointerdown', 'contextmenu']) {
+    document.addEventListener(type, (e) => {
+      const el = deckCardOf(e.target);
+      if (!el || !foilActive()) return;
+      menuCard = { el, at: Date.now() };
+      setTimeout(scanMenus, 60);
+      setTimeout(scanMenus, 300);
+    }, true);
+  }
+
+  function scanMenus() {
+    if (!menuCard || Date.now() - menuCard.at > 2000 || !menuCard.el.isConnected) return;
+    for (const menu of document.querySelectorAll('[role="menu"][data-state="open"]')) injectFoilItem(menu, menuCard.el);
+  }
+
+  function injectFoilItem(menu, deckCard) {
+    if (menu.querySelector('[data-ea-foil-item]')) return;
+    const card = cardOfDeckElement(deckCard);
+    const template = [...menu.querySelectorAll('[role="menuitem"]')].find(i => i.querySelector('kbd'));
+    if (!card || !template) return;
+
+    const item = template.cloneNode(true);
+    item.dataset.eaFoilItem = '1';
+    item.id = 'edhproxy-foil';
+    item.dataset.value = 'edhproxy-foil';
+    item.removeAttribute('data-highlighted');
+    const kbd = item.querySelector('kbd');
+    kbd.textContent = 'F';
+    const label = document.createTextNode(t('foilAdd'));
+    item.replaceChildren(label, kbd);
+    foilNameOf(card).then((name) => { if (name && ownFoils[name]) label.textContent = t('foilRemove'); });
+
+    item.addEventListener('pointerenter', () => item.setAttribute('data-highlighted', ''));
+    item.addEventListener('pointerleave', () => item.removeAttribute('data-highlighted'));
+    // Keep the menu's own handlers from treating this as one of its items.
+    for (const type of ['pointerdown', 'pointerup', 'mousedown', 'mouseup']) item.addEventListener(type, (e) => e.stopPropagation());
+    item.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      toggleFoil(card);
+      menu.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+
+    const separator = menu.querySelector('[role="separator"]');
+    menu.insertBefore(item, separator || null);
+  }
+
   // ---------- wiring ----------
 
   chrome.storage.onChanged.addListener((changes, area) => {
@@ -1102,6 +1264,11 @@
     }
     if (changes.library) library = changes.library.newValue || {};
     if (changes.arts || changes.library) refreshCustomViews();
+    if (changes.foils) {
+      ownFoils = changes.foils.newValue || {};
+      scheduleScan();
+      if (sync) publishSoon(800);
+    }
     if (changes.settings) {
       const old = settings;
       settings = { ...DEFAULT_SETTINGS, ...(changes.settings.newValue || {}) };
@@ -1110,6 +1277,8 @@
         checkRoom();
       } else if (old.uploadLocal !== settings.uploadLocal && sync) {
         shareLocalArts();
+        publishSoon(300);
+      } else if (old.foilEnabled !== settings.foilEnabled && sync) {
         publishSoon(300);
       }
       scheduleScan();
@@ -1140,7 +1309,8 @@
   });
 
   async function init() {
-    const data = await chrome.storage.local.get(['settings', 'arts', 'library', 'nameCache', 'clientId', 'hintCustomShown']);
+    const data = await chrome.storage.local.get(['settings', 'arts', 'library', 'foils', 'nameCache', 'clientId', 'hintCustomShown']);
+    ownFoils = data.foils || {};
     settings = { ...DEFAULT_SETTINGS, ...(data.settings || {}) };
     ownArts = data.arts || {};
     library = data.library || {};
@@ -1148,8 +1318,10 @@
     // Only whole-card images are supported now; older "art"/"extended" entries become whole-card.
     for (const a of [...Object.values(ownArts), ...Object.values(library).flat()]) {
       if (a.m !== 'full') { a.m = 'full'; migrated = true; }
+      const direct = directImageUrl(a.u);
+      if (direct !== a.u) { a.u = direct; migrated = true; }
     }
-    if (migrated) chrome.storage.local.set({ arts: ownArts });
+    if (migrated) chrome.storage.local.set({ arts: ownArts, library });
     // Arts saved before the library existed become its first entries.
     for (const a of Object.values(ownArts)) {
       const lower = (a.label || '').toLowerCase();

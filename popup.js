@@ -1,4 +1,4 @@
-const DEFAULT_SETTINGS = { syncEnabled: true, uploadLocal: true, showOthers: true, server: 'https://ntfy.sh' };
+const DEFAULT_SETTINGS = { syncEnabled: true, uploadLocal: true, showOthers: true, foilEnabled: true, server: 'https://ntfy.sh' };
 const $ = (id) => document.getElementById(id);
 
 let settings = { ...DEFAULT_SETTINGS };
@@ -24,6 +24,7 @@ async function saveSettings() {
   settings = {
     syncEnabled: $('syncEnabled').checked,
     showOthers: $('showOthers').checked,
+    foilEnabled: $('foilEnabled').checked,
     uploadLocal: $('uploadLocal').checked,
     server: $('server').value.trim() || DEFAULT_SETTINGS.server,
   };
@@ -94,8 +95,8 @@ async function renderStatus() {
 }
 
 $('export').onclick = async () => {
-  const { library = {} } = await chrome.storage.local.get('library');
-  const blob = new Blob([JSON.stringify({ version: 1, arts, library }, null, 2)], { type: 'application/json' });
+  const { library = {}, foils = {} } = await chrome.storage.local.get(['library', 'foils']);
+  const blob = new Blob([JSON.stringify({ version: 1, arts, library, foils }, null, 2)], { type: 'application/json' });
   const a = el('a', { href: URL.createObjectURL(blob), download: 'edhproxy-arts.json' });
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
@@ -112,7 +113,8 @@ $('importFile').onchange = async () => {
     for (const [k, a] of Object.entries(incoming)) {
       if (/^(id:|name:)/.test(k) && a && validUrl(a.u)) arts[k] = a;
     }
-    const { library = {} } = await chrome.storage.local.get('library');
+    const { library = {}, foils = {} } = await chrome.storage.local.get(['library', 'foils']);
+    for (const [name, on] of Object.entries(data.foils || {})) if (on === true && name.length <= 200) foils[name.toLowerCase()] = true;
     for (const [name, list] of Object.entries(data.library || {})) {
       if (!Array.isArray(list)) continue;
       const merged = library[name] || [];
@@ -125,7 +127,7 @@ $('importFile').onchange = async () => {
       }
       if (merged.length) library[name] = merged;
     }
-    await chrome.storage.local.set({ arts, library });
+    await chrome.storage.local.set({ arts, library, foils });
     renderArts();
   } catch (e) {
     alert(t('importError', { msg: e.message }));
@@ -133,7 +135,7 @@ $('importFile').onchange = async () => {
   $('importFile').value = '';
 };
 
-for (const id of ['syncEnabled', 'showOthers', 'uploadLocal']) $(id).addEventListener('change', saveSettings);
+for (const id of ['syncEnabled', 'showOthers', 'uploadLocal', 'foilEnabled']) $(id).addEventListener('change', saveSettings);
 $('server').addEventListener('change', saveSettings);
 
 (async () => {
@@ -151,6 +153,7 @@ $('server').addEventListener('change', saveSettings);
   arts = data.arts || {};
   $('syncEnabled').checked = settings.syncEnabled;
   $('showOthers').checked = settings.showOthers;
+  $('foilEnabled').checked = settings.foilEnabled;
   $('uploadLocal').checked = settings.uploadLocal;
   $('server').value = settings.server;
   renderArts();
