@@ -1,0 +1,39 @@
+# Publishes a GitHub release when a version tag (e.g. v1.2.0) is pushed. The tag must match
+# "version" in manifest.json. The release asset edhproxy.zip is what people install
+# and what the extension's "Update now" page downloads.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check version matches tag
+        run: |
+          version=$(jq -r .version manifest.json)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "manifest.json version is $version but the tag is $GITHUB_REF_NAME"
+            exit 1
+          fi
+
+      - name: Package
+        run: |
+          # The sources say __REPO__; releases point at this repository (update checks use it).
+          sed -i "s#__REPO__#${GITHUB_REPOSITORY}#g" manifest.json
+          mkdir dist
+          zip -r dist/edhproxy.zip \
+            manifest.json background.js content.js page-owner.js i18n.js unzip.js \
+            popup.html popup.js popup.css update.html update.js icons
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

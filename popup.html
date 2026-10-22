@@ -1,0 +1,53 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>EDHProxy</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <h1>EDHProxy <span id="version" class="version"></span></h1>
+    <p class="hint" data-i18n-html="popupHint"></p>
+  </header>
+
+  <section id="update" class="card update" hidden>
+    <b id="updateTitle"></b>
+    <p class="small" data-i18n="updateHow"></p>
+    <div class="buttons">
+      <button id="updateNow" class="accent" data-i18n="updateNow"></button>
+      <a id="updateLink" target="_blank" rel="noopener" data-i18n="updateLink"></a>
+    </div>
+  </section>
+
+  <section id="status" class="card" data-i18n="statusChecking"></section>
+
+  <section class="card">
+    <h2 data-i18n="settings"></h2>
+    <label class="check"><input type="checkbox" id="syncEnabled"> <span data-i18n="syncEnabled"></span></label>
+    <label class="check"><input type="checkbox" id="uploadLocal"> <span data-i18n="uploadLocal"></span></label>
+    <p class="small indent" data-i18n="uploadLocalNote"></p>
+    <label class="check"><input type="checkbox" id="showOthers"> <span data-i18n="showOthers"></span></label>
+    <details>
+      <summary data-i18n="advanced"></summary>
+      <label class="field"><span data-i18n="serverLabel"></span>
+        <input type="text" id="server" spellcheck="false">
+      </label>
+      <p class="small" data-i18n="serverNote"></p>
+    </details>
+  </section>
+
+  <section class="card">
+    <h2><span data-i18n="myArts"></span> <span id="count"></span></h2>
+    <ul id="arts"></ul>
+    <div class="buttons">
+      <button id="export" data-i18n="export"></button>
+      <button id="import" data-i18n="import"></button>
+      <input type="file" id="importFile" accept="application/json" hidden>
+    </div>
+  </section>
+
+  <script src="i18n.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

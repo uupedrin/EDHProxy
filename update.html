@@ -1,0 +1,38 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>EDHProxy</title>
+  <link rel="icon" href="icons/icon32.png">
+  <link rel="stylesheet" href="popup.css">
+  <style>
+    body { width: auto; max-width: 560px; margin: 48px auto; padding: 24px; }
+    .card p { margin: 0 0 10px; }
+    #status { min-height: 1.5em; margin-top: 12px; }
+    #status.error { color: var(--bad); }
+    #status.ok { color: var(--ok); }
+    .buttons { flex-wrap: wrap; }
+    button.primary { background: var(--accent); color: #fff; height: 40px; padding: 0 16px; font-size: 14px; }
+    button.primary:hover { background: var(--accent-hover); }
+    button:disabled { opacity: .5; cursor: default; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1 data-i18n="upd_title"></h1>
+  </header>
+  <section class="card">
+    <p id="versions"></p>
+    <p class="small" data-i18n="upd_firstTime"></p>
+    <div class="buttons">
+      <button id="go" class="primary" data-i18n="updateNow"></button>
+      <button id="pick" class="hidden" data-i18n="upd_pickOther"></button>
+    </div>
+    <p id="status"></p>
+  </section>
+  <script src="i18n.js"></script>
+  <script src="unzip.js"></script>
+  <script src="update.js"></script>
+</body>
+</html>

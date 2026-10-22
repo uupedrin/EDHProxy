@@ -1,0 +1,56 @@
+{
+  "manifest_version": 3,
+  "name": "EDHProxy",
+  "version": "1.1.0",
+  "description": "Use your own card art (alters, proxies) on edhplay.com and share it with players in your room who also use EDHProxy.",
+  "homepage_url": "https://github.com/__REPO__",
+  "permissions": [
+    "storage",
+    "unlimitedStorage",
+    "alarms"
+  ],
+  "host_permissions": [
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://edhplay.com/*",
+        "https://www.edhplay.com/*"
+      ],
+      "js": [
+        "i18n.js",
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://edhplay.com/*",
+        "https://www.edhplay.com/*"
+      ],
+      "js": [
+        "page-owner.js"
+      ],
+      "run_at": "document_idle",
+      "world": "MAIN"
+    }
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_title": "EDHProxy",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png"
+    }
+  }
+}
