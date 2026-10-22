@@ -1,57 +1,107 @@
-# EDHProxy
+<p align="center">
+  <img src="icon.png" alt="EDHProxy icon" width="128" height="128">
+</p>
 
-Extensão para navegadores Chromium (Chrome, Edge, Brave, Opera, Vivaldi) que troca a arte das cartas no [edhplay.com](https://edhplay.com) e compartilha suas artes com quem está na mesma sala e também usa a extensão.
+<h1 align="center">EDHProxy</h1>
 
-## Instalar
+<p align="center">
+  Use your own card art (alters, proxies) on <a href="https://edhplay.com">edhplay.com</a><br>
+  and share it with the players in your room who also use EDHProxy.
+</p>
 
-1. Baixe o **edhproxy.zip** da [última release](../../releases/latest) e extraia numa pasta sua, por exemplo `Documentos\EDHProxy`.
-   Evite pastas de sistema como `AppData` ou `Arquivos de Programas`: o navegador não deixa a extensão se atualizar nelas.
-2. Abra `chrome://extensions` (Edge: `edge://extensions`, Brave: `brave://extensions`), ative o **Modo do desenvolvedor**, clique em **Carregar sem compactação** e escolha essa pasta.
+<p align="center">
+  <a href="../../releases/latest">Download</a> ·
+  <a href="#install">Install</a> ·
+  <a href="#use">Use</a> ·
+  <a href="#how-sharing-works">Sharing &amp; privacy</a>
+</p>
 
-Funciona em Windows, macOS e Linux, em navegadores Chromium (Chrome, Edge, Brave, Opera, Vivaldi).
+> **Unofficial fan project.** EDHProxy is not affiliated with, endorsed or sponsored by EDHPlay or Wizards of the Coast. Magic: The Gathering and its symbols are trademarks of Wizards of the Coast LLC.
 
-## Atualizar
+## Features
 
-Quando sai versão nova, o ícone da extensão ganha um **↑** e o popup mostra o aviso com o botão **Atualizar agora**. Ele abre uma página da extensão que baixa a versão nova do GitHub e salva os arquivos na pasta da extensão; depois ela se recarrega sozinha. Nada roda fora do navegador nem é instalado no sistema; a extensão só consulta o GitHub a cada 6 horas para saber se há versão nova.
+- **Custom art per card.** Upload an image of the whole card (an alter, a proxy) by URL or from your computer, and it replaces that card everywhere on edhplay: your decks, the table, previews and deck covers.
+- **A Custom folder in "Change Printing".** Every card keeps a folder with all the arts you have uploaded for it. Pick one, then **Confirm** — just like choosing a printing.
+- **Shared in game.** Players in the same room who use EDHProxy see your arts on *your* cards, and you see theirs on *their* cards. Everyone else sees the normal cards.
+- **Local names.** Give each art a name to tell them apart. Names stay in your browser.
+- **Follows the site's language.** English, Spanish, Italian, German, French, Portuguese, Japanese and Dutch — the same languages edhplay offers.
+- **One-click updates.** A badge on the toolbar icon tells you when there's a new version.
 
-Na primeira vez, o navegador pede para você escolher a pasta da extensão (a mesma do "Carregar sem compactação") e permissão para salvar nela. Se pedir de novo depois, é só confirmar.
+## Install
 
-Também dá para atualizar à mão: baixe o zip novo e extraia por cima da mesma pasta. A extensão percebe a troca e se recarrega em até 1 minuto.
+EDHProxy works in Chromium browsers (Chrome, Edge, Brave, Opera, Vivaldi) on Windows, macOS and Linux.
 
-## Publicar uma versão nova (para quem mantém o repositório)
+1. Download **edhproxy.zip** from the [latest release](../../releases/latest) and extract it into a folder of your own, for example `Documents/EDHProxy`.
+   Avoid system folders such as `AppData` or `Program Files`: the browser won't let the extension update itself there.
+2. Open `chrome://extensions` (Edge: `edge://extensions`, Brave: `brave://extensions`), turn on **Developer mode**, click **Load unpacked** and pick that folder.
+3. Reload any edhplay tabs that were already open.
 
-1. Aumente `"version"` no `manifest.json` (ex.: `1.2.0`) e faça commit.
-2. Crie e envie a tag com o mesmo número: `git tag v1.2.0` e `git push origin v1.2.0`.
-3. O GitHub Actions ([release.yml](.github/workflows/release.yml)) monta o zip, preenche o nome do repositório no manifest e publica a release. A extensão de todo mundo passa a mostrar o aviso com o botão **Atualizar agora**.
+Everyone you play with needs to install it too to see each other's arts.
 
-## Usar
+## Update
 
-1. No seu deck (`edhplay.com/decks/<id>`), clique numa carta e escolha **Mudar Impressão** (Change Printing).
-2. Antes das impressões aparece a pasta **Custom**. Ela abre as artes que você já enviou para aquela carta.
-3. Em **+ Adicionar**, cole a URL de uma imagem (https) ou escolha um arquivo e, se quiser, dê um nome. A imagem deve ser a carta inteira (alter, proxy): ela substitui a carta toda.
-4. **Salvar** coloca a arte na pasta já selecionada (borda azul); o **Confirm** do edhplay aplica em todas as suas cópias da carta e **Cancel** descarta, como numa impressão normal.
+When a new version is out, the extension icon shows a **↑** badge. Click the icon, then **Update now**: a page of the extension downloads the new version from GitHub, saves it into the extension folder and reloads the extension.
 
-No painel Custom: clique numa arte para selecioná-la e depois em **Confirm** (borda verde = em uso, azul = selecionada); **Original** (ou clicar na impressão atual) + Confirm volta à arte normal; escolher outra impressão + Confirm troca a impressão e desliga a arte custom. Use o lápis para dar/trocar o nome e no ✕ para apagar. Os nomes ficam só no seu navegador; nunca vão para a sala.
+The first time, the browser asks you to pick the extension folder (the one you chose in **Load unpacked**) and to allow saving there.
 
-As artes só são editadas na página do deck; na mesa elas só são exibidas.
+You can also update by hand: download the new zip and extract it over the same folder. The extension notices within a minute and reloads itself.
 
-Os textos da extensão seguem o idioma escolhido no edhplay (inglês, espanhol, italiano, alemão, francês, português, japonês ou holandês) e mudam junto quando você troca o idioma do site. O popup usa o último idioma visto no site.
+Nothing is installed on your system and nothing runs outside the browser. The extension only asks GitHub every 6 hours whether there's a new version.
 
-O popup (ícone da extensão) mostra o status da sala, quem mais está com a extensão, sua lista de artes e permite exportar/importar.
+## Use
 
-## Como funciona o compartilhamento
+1. Open one of your decks (`edhplay.com/decks/<id>`), click a card and choose **Change Printing**.
+2. Before the printings there's a **Custom** folder. Open it.
+3. Click **+ Add**, paste an image URL (https) or choose a file, optionally give it a name, and **Save**.
+4. The new art is selected (blue border). Click edhplay's **Confirm** to use it on all your copies of the card, or **Cancel** to leave things as they were.
 
-- Em `/games/<sala>/play` ou `/spectate`, a extensão entra num canal do [ntfy.sh](https://ntfy.sh) (pub/sub público e gratuito) cujo nome é um hash do ID da sala.
-- Ela publica a lista das suas artes (só as URLs) e recebe a dos outros. Quem entra depois recebe o histórico (o ntfy.sh guarda por ~12h).
-- **Arquivos locais** ficam guardados só no seu navegador. Durante uma partida, quando há outro jogador com a extensão na sala e a carta aparece na mesa, a extensão sobe uma cópia temporária no [litterbox.catbox.moe](https://litterbox.catbox.moe) (expira em 1h) e compartilha esse link. Cada partida sobe de novo; partidas com mais de ~50 min renovam o envio. Quem tiver o link pode ver a imagem nesse período. Desligue em Popup → "Compartilhar arquivos locais" para mantê-los só com você.
-- Artes por URL (`https://`) são compartilhadas direto, sem upload. Links do Discord expiram.
-- Cada arte vale só para as cartas do dono. A extensão lê o dono de cada carta (`owner_id`) direto do jogo e anuncia na sala qual jogador você é. Se você e um amigo usam a mesma carta, cada um vê a própria arte na sua cópia e a do outro na cópia dele. Cartas de quem não usa a extensão ficam com a arte original.
-- O popup mostra o nome de usuário do edhplay de quem está com a extensão. O nome é lido do próprio jogo, na sua máquina; ele não é enviado pelo canal de sincronização.
-- Enquanto a extensão ainda não sabe quem você é (ela descobre pela sua mão), cartas que nenhum outro jogador reivindicou são tratadas como suas.
-- Qualquer um que saiba o ID da sala poderia ler o canal. Não use imagens privadas.
-- Dá para usar outro servidor ntfy (ex.: self-hosted) em Popup → Avançado; todos na sala precisam usar o mesmo.
+In the Custom panel:
 
-## Limitações
+| | |
+|---|---|
+| Green border | the art in use |
+| Blue border | the art you selected — click **Confirm** to apply |
+| **Original** | back to the printing's normal art (also: click the current printing, then **Confirm**) |
+| ✏️ pencil | name or rename an art (only you see names) |
+| ✕ | delete an art |
 
-- Depende de como o edhplay renderiza as cartas hoje (`<img>` do Scryfall) e dos dados internos do React (`card.owner_id`, `localPlayerId`, lidos por `page-owner.js`). Se o site mudar, a extensão pode parar de funcionar.
-- A permissão `https://*/*` existe para publicar no servidor ntfy escolhido no popup (que pode ser self-hosted).
+Choosing a different printing and confirming switches the card back to normal art. Arts are edited on deck pages only; in a game they are just shown.
+
+The popup (click the extension icon) shows whether you're in a room, who else has the extension, your arts, and lets you export/import them.
+
+## How sharing works
+
+- In a game (`/games/<room>/play` or `/spectate`), EDHProxy joins a channel on [ntfy.sh](https://ntfy.sh), a free public pub/sub service. The channel name is a hash of the room ID.
+- It publishes the list of your arts (card + image URL) and receives the other players' lists. Players who join later get the recent history (ntfy.sh keeps it for about 12 hours).
+- **Arts only apply to their owner's cards.** EDHProxy reads each card's owner from the game, so if you and a friend play the same card, each copy shows its owner's art.
+- **Local files** stay in your browser. During a game, when another player with EDHProxy is in the room and the card is on the table, a temporary copy is uploaded to [litterbox.catbox.moe](https://litterbox.catbox.moe) (deleted after 1 hour) and that link is shared. Each game uploads again; long games renew it. Turn this off in the popup (**Share local files**) to keep local files to yourself.
+- **Image URLs** are shared as they are, with no upload. Discord links expire, so prefer hosts like imgur or catbox.
+- Usernames shown in the popup are read from the game on your computer; they are never sent through the channel. Art names never leave your browser.
+- Anyone who knows a room ID could read its channel, so don't use private images.
+- You can use another ntfy server (e.g. self-hosted) in the popup under **Advanced**; everyone in the room must use the same one.
+
+## Limitations
+
+- EDHProxy relies on how edhplay currently renders cards (Scryfall images) and on some of its internal data (card owners, player list). If the site changes, the extension may stop working until it's updated.
+- On deck covers, which show only the illustration, the custom card is cropped to the art box of a modern frame; full-art or unusual alters may be cropped differently.
+- The broad `https://*/*` permission is there so the extension can reach the ntfy server you choose, which can be self-hosted.
+
+## Releasing a new version
+
+For maintainers of this repository:
+
+1. Bump `"version"` in `manifest.json` (e.g. `1.2.0`) and commit.
+2. Tag the same version and push the tag:
+   ```bash
+   git tag v1.2.0
+   git push origin v1.2.0
+   ```
+3. GitHub Actions ([release.yml](.github/workflows/release.yml)) builds `edhproxy.zip`, fills in this repository's name and publishes the release. Installed extensions show the update badge within a few hours.
+
+If the workflow fails with a permissions error, enable **Settings → Actions → General → Workflow permissions → Read and write permissions**.
+
+## Credits
+
+- Card images and data from [Scryfall](https://scryfall.com).
+- Room sync through [ntfy](https://ntfy.sh); temporary hosting for local files through [litterbox](https://litterbox.catbox.moe).
+- EDHProxy is unofficial Fan Content permitted under the [Fan Content Policy](https://company.wizards.com/en/legal/fancontentpolicy). Not approved/endorsed by Wizards. Portions of the materials used are property of Wizards of the Coast. ©Wizards of the Coast LLC.

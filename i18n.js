@@ -85,6 +85,7 @@ var EA_I18N = (() => {
       upd_wrongFolder: "That is not the extension folder. Pick the folder with the EDHProxy manifest.json.",
       upd_denied: "No permission to save in the folder.",
       upd_failed: "Could not update: {msg}",
+      disclaimer: "EDHProxy is an unofficial fan project. It is not affiliated with, endorsed or sponsored by EDHPlay or Wizards of the Coast. Magic: The Gathering and its symbols are trademarks of Wizards of the Coast LLC.",
     },
     pt: {
       formTitle: 'Nova arte',
@@ -166,6 +167,7 @@ var EA_I18N = (() => {
       upd_wrongFolder: "Essa não é a pasta da extensão. Escolha a pasta com o manifest.json do EDHProxy.",
       upd_denied: "Sem permissão para salvar na pasta.",
       upd_failed: "Não foi possível atualizar: {msg}",
+      disclaimer: "EDHProxy é um projeto não oficial feito por fãs. Não é afiliado, endossado nem patrocinado pelo EDHPlay ou pela Wizards of the Coast. Magic: The Gathering e seus símbolos são marcas registradas da Wizards of the Coast LLC.",
     },
     es: {
       formTitle: 'Nuevo arte',
@@ -247,6 +249,7 @@ var EA_I18N = (() => {
       upd_wrongFolder: "Esa no es la carpeta de la extensión. Elige la carpeta con el manifest.json de EDHProxy.",
       upd_denied: "Sin permiso para guardar en la carpeta.",
       upd_failed: "No se pudo actualizar: {msg}",
+      disclaimer: "EDHProxy es un proyecto no oficial hecho por fans. No está afiliado, respaldado ni patrocinado por EDHPlay ni por Wizards of the Coast. Magic: The Gathering y sus símbolos son marcas registradas de Wizards of the Coast LLC.",
     },
     it: {
       formTitle: 'Nuova arte',
@@ -328,6 +331,7 @@ var EA_I18N = (() => {
       upd_wrongFolder: "Questa non è la cartella dell'estensione. Scegli la cartella con il manifest.json di EDHProxy.",
       upd_denied: "Nessun permesso per salvare nella cartella.",
       upd_failed: "Impossibile aggiornare: {msg}",
+      disclaimer: "EDHProxy è un progetto non ufficiale creato da fan. Non è affiliato, approvato né sponsorizzato da EDHPlay o da Wizards of the Coast. Magic: The Gathering e i suoi simboli sono marchi di Wizards of the Coast LLC.",
     },
     de: {
       formTitle: 'Neue Grafik',
@@ -409,6 +413,7 @@ var EA_I18N = (() => {
       upd_wrongFolder: "Das ist nicht der Ordner der Erweiterung. Wähle den Ordner mit der manifest.json von EDHProxy.",
       upd_denied: "Keine Berechtigung, im Ordner zu speichern.",
       upd_failed: "Aktualisierung fehlgeschlagen: {msg}",
+      disclaimer: "EDHProxy ist ein inoffizielles Fanprojekt. Es steht in keiner Verbindung zu EDHPlay oder Wizards of the Coast und wird von ihnen weder unterstützt noch gesponsert. Magic: The Gathering und seine Symbole sind Marken von Wizards of the Coast LLC.",
     },
     fr: {
       formTitle: 'Nouvelle illustration',
@@ -490,6 +495,7 @@ var EA_I18N = (() => {
       upd_wrongFolder: "Ce n'est pas le dossier de l'extension. Choisissez le dossier contenant le manifest.json d'EDHProxy.",
       upd_denied: "Pas d'autorisation d'enregistrer dans le dossier.",
       upd_failed: "Mise à jour impossible : {msg}",
+      disclaimer: "EDHProxy est un projet de fans non officiel. Il n'est ni affilié à EDHPlay ou à Wizards of the Coast, ni approuvé ou sponsorisé par eux. Magic: The Gathering et ses symboles sont des marques de Wizards of the Coast LLC.",
     },
     ja: {
       formTitle: '新しいアート',
@@ -571,6 +577,7 @@ var EA_I18N = (() => {
       upd_wrongFolder: "拡張機能のフォルダではありません。EDHProxy の manifest.json があるフォルダを選んでください。",
       upd_denied: "フォルダに保存する権限がありません。",
       upd_failed: "更新できませんでした：{msg}",
+      disclaimer: "EDHProxy はファンによる非公式プロジェクトです。EDHPlay および Wizards of the Coast とは提携しておらず、承認や後援も受けていません。Magic: The Gathering およびそのシンボルは Wizards of the Coast LLC の商標です。",
     },
     nl: {
       formTitle: 'Nieuwe art',
@@ -652,6 +659,7 @@ var EA_I18N = (() => {
       upd_wrongFolder: "Dat is niet de map van de extensie. Kies de map met de manifest.json van EDHProxy.",
       upd_denied: "Geen toestemming om in de map op te slaan.",
       upd_failed: "Bijwerken mislukt: {msg}",
+      disclaimer: "EDHProxy is een onofficieel fanproject. Het is niet verbonden aan, goedgekeurd of gesponsord door EDHPlay of Wizards of the Coast. Magic: The Gathering en de bijbehorende symbolen zijn handelsmerken van Wizards of the Coast LLC.",
     },
   };
 

@@ -66,3 +66,4 @@ button.remove:hover { background: rgba(248, 113, 113, .1); }
 .update .buttons { align-items: center; margin-top: 0; }
 button.accent { background: var(--accent); color: #fff; }
 button.accent:hover { background: var(--accent-hover); }
+.disclaimer { color: var(--dim); font-size: 11px; line-height: 1.4; margin-top: 4px; }
