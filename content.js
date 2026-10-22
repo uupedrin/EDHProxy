@@ -20,10 +20,15 @@
   let settings = { ...DEFAULT_SETTINGS };
   let ownArts = {};    // key -> { u, m, label, t }   key = "id:<uuid>/<face>" | "name:<lowercase name>"
   let library = {};    // lowercase card name -> [{ id, u, m, t }]  every art uploaded for that card
-  let ownFoils = {};   // lowercase card name -> true   cards shown with the foil overlay
+  let ownFoils = {};   // lowercase card name -> true   cards shown with the foil overlay (all decks)
+  // Per-deck choices, which win over the ones above for that deck:
+  let deckArts = {};   // deckId -> { "name:<lowercase name>": art | { none: true } }  (none = original art)
+  let deckFoils = {};  // deckId -> { <lowercase name>: true | false }
+  let playmats = [];   // [{ id, u, n?, t }]   playmats uploaded by this user
+  let activePlaymat = null; // id of the custom playmat in use, or null for edhplay's own
   let nameCache = {};  // uuid -> [frontName, backName]
   let clientId = null;
-  const remote = new Map();      // clientId -> { player, arts, foils: Set<name>, rev, pend }
+  const remote = new Map();      // clientId -> { player, arts, foils: Set<name>, playmat, rev, pend }
   const pendingNames = new Set();
 
   const send = (msg) => new Promise((resolve, reject) => {
@@ -50,6 +55,7 @@
   function hasNameKeys() {
     if (Object.keys(ownArts).some(k => k.startsWith('name:'))) return true;
     if (settings.foilEnabled && Object.keys(ownFoils).length) return true;
+    if (Object.keys(deckArts).length || (settings.foilEnabled && Object.keys(deckFoils).length)) return true;
     if (!settings.showOthers || !sync) return false;
     for (const p of remote.values()) {
       if (Object.keys(p.arts).some(k => k.startsWith('name:'))) return true;
@@ -85,11 +91,40 @@
     }
   }
 
+  // The deck in view: a deck page's own deck, or in a game/playtest the deck we joined with
+  // (page-owner.js reads it from edhplay's lobby).
+  function currentDeck() {
+    const page = location.pathname.match(/^\/decks\/([0-9a-f-]{36})/i);
+    return page ? page[1] : (document.documentElement.dataset.eaLocalDeck || null);
+  }
+
+  // Deck covers (My Decks, Explore) sit in a tile with data-deck-id, or link to their deck; every
+  // other image belongs to the deck in view.
+  function deckOf(img) {
+    const tile = img.closest('[data-deck-id]');
+    if (tile && /^[0-9a-f-]{36}$/i.test(tile.dataset.deckId)) return tile.dataset.deckId;
+    const link = img.closest('a[href*="/decks/"]') || (img.parentElement && img.parentElement.querySelector(':scope > a[href*="/decks/"]'));
+    const m = link && link.getAttribute('href').match(/\/decks\/([0-9a-f-]{36})/i);
+    return m ? m[1] : currentDeck();
+  }
+
+  function ownArtFor(idKey, nameKey, deck) {
+    const scoped = deck && nameKey && deckArts[deck] && deckArts[deck][nameKey];
+    if (scoped) return scoped.none ? null : scoped;
+    return ownArts[idKey] || (nameKey && ownArts[nameKey]) || null;
+  }
+
+  function ownFoilFor(keys, deck) {
+    const scoped = deck && deckFoils[deck];
+    if (scoped) for (const k of keys) if (k in scoped) return scoped[k];
+    return keys.some(k => ownFoils[k]);
+  }
+
   // In a room each player's arts only apply to the cards they own. Outside a room
   // (playtest) or when the owner is unknown, fall back to "mine first, then anyone's".
-  function findArt(id, face, owner) {
+  function findArt(id, face, owner, deck) {
     const [idKey, nameKey] = artKeys(id, face);
-    const own = ownArts[idKey] || (nameKey && ownArts[nameKey]) || null;
+    const own = ownArtFor(idKey, nameKey, deck);
     if (!currentRoom() || !owner) return own || latestRemote(idKey) || latestRemote(nameKey) || null;
 
     const me = myPlayer();
@@ -108,18 +143,20 @@
     return peer;
   }
 
+  // Lowercase names a foil can be stored under: both faces of a double-faced card count as the
+  // same card (it's saved under the front face's name).
+  const foilKeys = (names) => [...new Set(names.map(n => n.toLowerCase()))];
+
   // Foil follows the same ownership rules as arts, by card name.
-  function findFoil(id, face, owner) {
-    if (!settings.foilEnabled) return false;
-    const nm = faceName(id, face);
-    if (!nm) return false;
-    const name = nm.toLowerCase();
-    const own = !!ownFoils[name];
+  function findFoil(id, face, owner, deck) {
+    if (!settings.foilEnabled || !nameCache[id]) return false;
+    const keys = foilKeys(nameCache[id]);
+    const own = ownFoilFor(keys, deck);
     if (!currentRoom() || !owner) return own;
     const me = myPlayer();
     if (owner === me) return own;
     const peer = peerFor(owner);
-    if (peer) return peer.foils.has(name);
+    if (peer) return keys.some(k => peer.foils.has(k));
     return me ? false : own;
   }
 
@@ -225,8 +262,9 @@
 
     if (!(card.id in nameCache) && hasNameKeys()) lookupName(card.id);
     const owner = img.dataset.eaOwner || null;
-    const art = findArt(card.id, card.face, owner);
-    const foil = findFoil(card.id, card.face, owner);
+    const deck = deckOf(img);
+    const art = findArt(card.id, card.face, owner, deck);
+    const foil = findFoil(card.id, card.face, owner, deck);
     if (!art && !foil) {
       if (img.dataset.eaSrc) {
         delete img.dataset.eaSrc;
@@ -284,15 +322,19 @@
         if (n.tagName === 'IMG') queueImg(n);
         else if (n.querySelectorAll) for (const i of n.querySelectorAll('img')) queueImg(i);
         schedulePrintDialogScan();
+        schedulePlaymats();
+        schedulePlaymatSettings();
       }
     }
   });
 
   let announcedPlayer = null;
+  let announcedDeck = null;
   function onLocalPlayerChange() {
     scheduleScan();
+    schedulePlaymats();
     const me = myPlayer();
-    if (sync && me !== announcedPlayer) publishSoon(300);
+    if (sync && (me !== announcedPlayer || currentDeck() !== announcedDeck)) publishSoon(300);
   }
 
   // ---------- room sync (ntfy pub/sub) ----------
@@ -323,6 +365,7 @@
     sync = null;
     remote.clear();
     scheduleScan();
+    schedulePlaymats();
   }
 
   async function streamLoop(s) {
@@ -375,7 +418,7 @@
     if (!Number.isInteger(msg.i) || !Number.isInteger(msg.t) || msg.t < 1 || msg.t > 200 || !Array.isArray(msg.e)) return;
 
     const isNew = !remote.has(msg.c);
-    const p = remote.get(msg.c) || { player: null, arts: {}, foils: new Set(), rev: -1, pend: null };
+    const p = remote.get(msg.c) || { player: null, arts: {}, foils: new Set(), playmat: null, rev: -1, pend: null };
     remote.set(msg.c, p);
     if (msg.r < p.rev || (msg.r === p.rev && !p.pend)) return;
     if (!p.pend || p.pend.r !== msg.r) p.pend = { r: msg.r, parts: new Map() };
@@ -384,8 +427,14 @@
     if (p.pend.parts.size === msg.t) {
       const arts = {};
       const foils = new Set();
+      let playmat = null;
       for (const part of p.pend.parts.values()) {
         for (const e of part) {
+          // The playmat travels as ["playmat", url, "playmat"]; older versions skip the key.
+          if (Array.isArray(e) && e[0] === 'playmat') {
+            if (validRemoteUrl(e[1])) playmat = e[1];
+            continue;
+          }
           // Foils travel as ["foil:<name>", "", "foil"]; older versions skip them (no URL).
           if (Array.isArray(e) && typeof e[0] === 'string' && /^foil:.{1,200}$/.test(e[0])) {
             foils.add(e[0].slice(5).toLowerCase());
@@ -398,10 +447,12 @@
       }
       p.arts = arts;
       p.foils = foils;
+      p.playmat = playmat;
       p.rev = msg.r;
       p.pend = null;
       p.player = typeof msg.p === 'string' && msg.p.length <= 100 ? msg.p : null;
       scheduleScan();
+      schedulePlaymats();
     }
     // Someone new showed up: re-announce so they get our arts even if the cache expired.
     if (isNew) {
@@ -448,12 +499,27 @@
   async function publishAll() {
     const s = sync;
     if (!s) return;
+    // Arts and foils as the deck we're playing has them (its own choices over the all-decks ones).
+    const deck = currentDeck();
+    const arts = { ...ownArts };
+    for (const [k, a] of Object.entries((deck && deckArts[deck]) || {})) {
+      if (a.none) delete arts[k]; else arts[k] = a;
+    }
+    const foils = { ...ownFoils };
+    for (const [k, on] of Object.entries((deck && deckFoils[deck]) || {})) {
+      if (on) foils[k] = true; else delete foils[k];
+    }
     const entries = [];
-    for (const [k, a] of Object.entries(ownArts)) {
+    for (const [k, a] of Object.entries(arts)) {
       const u = a.u.startsWith('data:') ? (settings.uploadLocal && hostedUrl(a.u)) : a.u;
       if (validRemoteUrl(u)) entries.push([k, u, a.m]);
     }
-    if (settings.foilEnabled) for (const name of Object.keys(ownFoils)) entries.push(['foil:' + name, '', 'foil']);
+    if (settings.foilEnabled) for (const name of Object.keys(foils)) entries.push(['foil:' + name, '', 'foil']);
+    const mat = ownPlaymatUrl();
+    if (mat) {
+      const u = mat.startsWith('data:') ? (settings.uploadLocal && hostedUrl(mat)) : mat;
+      if (validRemoteUrl(u)) entries.push(['playmat', u, 'playmat']);
+    }
     const chunks = [[]];
     let size = 0;
     for (const e of entries) {
@@ -465,6 +531,7 @@
     const rev = Date.now();
     const player = myPlayer();
     announcedPlayer = player;
+    announcedDeck = deck;
     for (let i = 0; i < chunks.length; i++) {
       if (sync !== s) return;
       const body = JSON.stringify({ v: 1, c: clientId, p: player, r: rev, i, t: chunks.length, e: chunks[i] });
@@ -712,6 +779,8 @@
     .head .text { flex: 1; }
     .head b { font-size: 16px; font-weight: 600; color: #fff; }
     .sub { display: block; color: #a1a1aa; font-size: 13px; margin-top: 2px; }
+    .all { display: inline-flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 13px; color: #d4d4d8; cursor: pointer; }
+    .all input { accent-color: #0891b2; width: 15px; height: 15px; margin: 0; }
     .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; }
     .item { display: flex; flex-direction: column; gap: 4px; position: relative; }
     .add .card { border: 2px dashed rgba(255,255,255,.12); font-size: 28px; font-weight: 300; }
@@ -750,6 +819,9 @@
   // The art in use for a card: the by-name one, or one saved for a single printing of it.
   function activeArtFor(name) {
     const lower = name.toLowerCase();
+    const deck = currentDeck();
+    const scoped = deck && deckArts[deck] && deckArts[deck]['name:' + lower];
+    if (scoped) return scoped.none ? null : scoped;
     if (ownArts['name:' + lower]) return ownArts['name:' + lower];
     for (const [k, a] of Object.entries(ownArts)) {
       if (k.startsWith('id:') && (a.label || '').toLowerCase() === lower) return a;
@@ -764,14 +836,32 @@
 
   // Picking from the folder applies to every copy of the card in your decks, so drop any
   // per-printing art of that card that would otherwise take precedence.
-  async function activateArt(name, entry) {
+  // allDecks: change the art every deck uses (and drop this deck's own choice); otherwise only the
+  // deck in view changes. "Original" in one deck is stored as { none: true } so it can hide an art
+  // the other decks use.
+  async function activateArt(name, entry, allDecks) {
     const lower = name.toLowerCase();
-    for (const [k, a] of Object.entries(ownArts)) {
-      if (k.startsWith('id:') && (a.label || '').toLowerCase() === lower) delete ownArts[k];
+    const key = 'name:' + lower;
+    const deck = currentDeck();
+    const art = entry && { u: entry.u, m: entry.m, label: name, t: Date.now() };
+    if (allDecks || !deck) {
+      for (const [k, a] of Object.entries(ownArts)) {
+        if (k.startsWith('id:') && (a.label || '').toLowerCase() === lower) delete ownArts[k];
+      }
+      if (art) ownArts[key] = art; else delete ownArts[key];
+      if (deck && deckArts[deck]) {
+        delete deckArts[deck][key];
+        if (!Object.keys(deckArts[deck]).length) delete deckArts[deck];
+      }
+    } else {
+      const forDeck = deckArts[deck] || (deckArts[deck] = {});
+      const global = ownArts[key] || Object.entries(ownArts).some(([k, a]) => k.startsWith('id:') && (a.label || '').toLowerCase() === lower);
+      if (art) forDeck[key] = art;
+      else if (global) forDeck[key] = { none: true, label: name, t: Date.now() };
+      else delete forDeck[key];
+      if (!Object.keys(forDeck).length) delete deckArts[deck];
     }
-    if (entry) ownArts['name:' + lower] = { u: entry.u, m: entry.m, label: name, t: Date.now() };
-    else delete ownArts['name:' + lower];
-    await chrome.storage.local.set({ arts: ownArts });
+    await chrome.storage.local.set({ arts: ownArts, deckArts });
   }
 
   async function renameEntry(name, entry, n) {
@@ -790,7 +880,12 @@
       const ofCard = k === 'name:' + lower || (k.startsWith('id:') && (a.label || '').toLowerCase() === lower);
       if (ofCard && a.u === entry.u && a.m === entry.m) delete ownArts[k];
     }
-    await chrome.storage.local.set({ library, arts: ownArts });
+    for (const [deck, forDeck] of Object.entries(deckArts)) {
+      const a = forDeck['name:' + lower];
+      if (a && !a.none && a.u === entry.u && a.m === entry.m) delete forDeck['name:' + lower];
+      if (!Object.keys(forDeck).length) delete deckArts[deck];
+    }
+    await chrome.storage.local.set({ library, arts: ownArts, deckArts });
   }
 
   // Change Printing is a grid of tiles: [488/680 box with <img alt="<card name>">, <p>set name</p>],
@@ -867,7 +962,8 @@
     const names = await lookupName(card.id);
     const name = (names && names[0]) || sample.alt;
     // pending: the Custom choice waiting for edhplay's Confirm — 'original' or a library entry.
-    const ctx = { dlg, grid, card, name, pending: null };
+    // allDecks: apply the choice to every deck instead of only the deck in view.
+    const ctx = { dlg, grid, card, name, pending: null, allDecks: false };
     printCtx.set(dlg, ctx);
     watchPrintingClicks(ctx);
 
@@ -908,10 +1004,13 @@
   // child of its row. Matching on structure keeps this independent of edhplay's UI language.
   function footerPairs(dlg) {
     const pairs = [];
-    for (const group of dlg.querySelectorAll('.chakra-dialog__footer *')) {
+    const footers = [...dlg.querySelectorAll('.chakra-dialog__footer')];
+    // The buttons sit in a row inside the footer (Change Printing) or right in it (Settings, game
+    // Preferences — where the dialog's close button may come after the footer).
+    for (const group of footers.flatMap(f => [f, ...f.querySelectorAll('*')])) {
       const [a, b] = group.children;
       if (group.children.length === 2 && a.tagName === 'BUTTON' && b.tagName === 'BUTTON'
-        && group === group.parentElement.lastElementChild) pairs.push({ cancel: a, confirm: b });
+        && (footers.includes(group) || group === group.parentElement.lastElementChild)) pairs.push({ cancel: a, confirm: b });
     }
     return pairs;
   }
@@ -969,10 +1068,10 @@
       e.stopImmediatePropagation();
       const choice = ctx.pending;
       ctx.pending = null;
-      activateArt(ctx.name, choice === 'original' ? null : choice).then(() => pair.cancel.click());
+      activateArt(ctx.name, choice === 'original' ? null : choice, ctx.allDecks).then(() => pair.cancel.click());
     } else if (activeArtFor(ctx.name)) {
       // Confirming a real printing switches away from the custom art.
-      activateArt(ctx.name, null);
+      activateArt(ctx.name, null, ctx.allDecks);
     }
   }, true);
 
@@ -994,7 +1093,8 @@
       <div class="panel">
         <div class="head">
           <div class="text"><b></b>
-            <span class="sub"></span></div>
+            <span class="sub"></span>
+            <label class="all"><input type="checkbox"> <span></span></label></div>
           <button class="x sm"></button>
         </div>
         <div class="grid"></div>
@@ -1002,6 +1102,9 @@
       </div>`;
     for (const type of ['keydown', 'keyup', 'keypress']) root.addEventListener(type, (e) => e.stopPropagation());
     root.querySelector('.x').onclick = () => togglePanel(ctx);
+    const allDecks = root.querySelector('.all input');
+    allDecks.checked = ctx.allDecks;
+    allDecks.onchange = () => { ctx.allDecks = allDecks.checked; };
     const gridEl = root.querySelector('.grid');
     const baseUrl = `https://cards.scryfall.io/normal/${card.face}/${card.id[0]}/${card.id[1]}/${card.id}.jpg`;
 
@@ -1098,6 +1201,7 @@
         const pair = footerPairs(ctx.dlg)[0];
         const confirm = (pair && pair.confirm.textContent.trim()) || 'Confirm';
         root.querySelector('.head .sub').textContent = t('panelSub', { confirm });
+        root.querySelector('.all span').textContent = t('allDecks');
         root.querySelector('.x').textContent = t('close');
         gridEl.textContent = '';
         const selected = (choice) => (sameChoice(ctx.pending, choice) ? ' selected' : '');
@@ -1128,7 +1232,7 @@
   }
 
   // Local files are stored as data URLs; downscale big ones to keep storage small.
-  async function shrinkFile(file) {
+  async function shrinkFile(file, max = 1200) {
     const dataUrl = await new Promise((resolve, reject) => {
       const r = new FileReader();
       r.onload = () => resolve(r.result);
@@ -1136,7 +1240,6 @@
       r.readAsDataURL(file);
     });
     const img = await loadImage(dataUrl);
-    const max = 1200;
     const scale = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
     if (scale === 1 && file.size < 600 * 1024) return dataUrl;
     const c = document.createElement('canvas');
@@ -1161,6 +1264,436 @@
     setTimeout(() => el.remove(), 6600);
   }
 
+  // ---------- custom playmats on the game board ----------
+
+  // Each player's area is [data-player-board-id=<player id>] with the playmat as its background
+  // (a Chakra class). An inline !important background replaces it; React never touches the
+  // element's style attribute. Images go in as data URLs (see renderImage in background.js).
+  const PLAYMAT_WIDTH = 2400;
+  const playmatImages = new Map(); // url -> data URL, or null while loading / failed
+
+  // While Settings is open, the playmat being picked is previewed on your board.
+  let previewPlaymat; // undefined = no preview, null = edhplay's own playmat, id = a custom one
+
+  function ownPlaymatUrl() {
+    const id = previewPlaymat !== undefined ? previewPlaymat : activePlaymat;
+    const mat = id && playmats.find(p => p.id === id);
+    return mat ? directImageUrl(mat.u) : null;
+  }
+
+  // Same ownership rules as arts: your board gets yours, a peer's board gets theirs.
+  function playmatUrlFor(playerId) {
+    const own = ownPlaymatUrl();
+    if (!currentRoom()) return own;
+    const me = myPlayer();
+    if (playerId === me) return own;
+    const peer = peerFor(playerId);
+    if (peer) return peer.playmat ? directImageUrl(peer.playmat) : null;
+    return me ? null : own;
+  }
+
+  function playmatImage(url) {
+    if (playmatImages.has(url)) return playmatImages.get(url);
+    playmatImages.set(url, null);
+    send({ type: 'render', url, width: PLAYMAT_WIDTH, asData: true })
+      .then((res) => { playmatImages.set(url, res.url); schedulePlaymats(); })
+      .catch((e) => console.warn('[EDHProxy] playmat failed to load', url, e));
+    return null;
+  }
+
+  function applyPlaymats() {
+    for (const board of document.querySelectorAll('[data-player-board-id]')) {
+      const url = playmatUrlFor(board.dataset.playerBoardId);
+      if (!url) {
+        if (board.dataset.eaPlaymat) {
+          for (const p of ['background-image', 'background-size', 'background-position', 'background-repeat']) board.style.removeProperty(p);
+          delete board.dataset.eaPlaymat;
+        }
+        continue;
+      }
+      const image = playmatImage(url);
+      if (!image || board.dataset.eaPlaymat === url) continue;
+      board.style.setProperty('background-image', `url("${image}")`, 'important');
+      board.style.setProperty('background-size', 'cover', 'important');
+      board.style.setProperty('background-position', 'center', 'important');
+      board.style.setProperty('background-repeat', 'no-repeat', 'important');
+      board.dataset.eaPlaymat = url;
+    }
+    // A local-file playmat is shared through litterbox like local arts.
+    const own = ownPlaymatUrl();
+    if (own && own.startsWith('data:') && sync) {
+      wanted.add(own);
+      shareLocalArts();
+    }
+  }
+
+  let playmatSettingsQueued = false;
+  function schedulePlaymatSettings() {
+    if (playmatSettingsQueued) return;
+    playmatSettingsQueued = true;
+    setTimeout(() => { playmatSettingsQueued = false; scanPlaymatSettings(); }, 50);
+  }
+
+  let playmatsQueued = false;
+  function schedulePlaymats() {
+    if (playmatsQueued) return;
+    playmatsQueued = true;
+    requestAnimationFrame(() => { playmatsQueued = false; applyPlaymats(); });
+  }
+
+  // ---------- "Custom" tab in edhplay's Settings > Playmats ----------
+
+  // The Playmats panel has filter tabs (All / Free / Patreon, role="tab" with data-value) above a
+  // grid of tiles. A cloned "Custom" tab swaps that grid for ours. Picking a custom playmat only
+  // takes effect with edhplay's own Save Preferences; Close throws it away.
+
+  const CHECK_SVG = '<svg viewBox="0 0 512 512" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M256 48C141.31 48 48 141.31 48 256s93.31 208 208 208 208-93.31 208-208S370.69 48 256 48zm108.25 138.29-134.4 160a16 16 0 0 1-12 5.71h-.27a16 16 0 0 1-11.89-5.3l-57.6-64a16 16 0 1 1 23.78-21.4l45.29 50.32 122.59-145.91a16 16 0 0 1 24.5 20.58z"/></svg>';
+
+  // Tiles copy edhplay's playmat tiles: 16:9, 12px corners, name on hover, cyan inset when selected.
+  const PLAYMAT_CSS = EDH_BASE_CSS + `
+    :host { display: block; }
+    .note { color: #a1a1aa; font-size: 12px; margin: 0 0 10px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
+    .tile { position: relative; overflow: hidden; border-radius: 12px; background: rgba(255,255,255,.04); cursor: pointer; aspect-ratio: 16/9; }
+    .tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .tile .cap { position: absolute; left: 0; right: 0; bottom: 0; padding: 28px 8px 6px; font-size: 12px; font-weight: 500;
+      color: #fafafa; background: linear-gradient(to top, rgba(0,0,0,.92), rgba(0,0,0,0)); opacity: 0; transition: opacity .18s;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .tile:hover .cap { opacity: 1; }
+    .tile .sel { position: absolute; inset: 0; border-radius: 12px; pointer-events: none; display: none;
+      box-shadow: inset 0 0 0 2px rgb(32,184,205), inset 0 0 20px 5px rgba(32,184,205,.5); }
+    .tile .check { position: absolute; top: 4px; right: 4px; color: rgb(32,184,205); display: none; line-height: 0; }
+    .tile.selected .sel, .tile.selected .check { display: block; }
+    .tile.add { border: 1px dashed rgba(255,255,255,.12); display: flex; align-items: center; justify-content: center;
+      color: #a1a1aa; font-size: 13px; font-weight: 500; }
+    .tile.add:hover { border-color: #0891b2; color: #22d3ee; }
+    .tile:focus-visible { outline: 2px solid #0891b2; outline-offset: 2px; }
+    .act { position: absolute; top: 6px; width: 28px; height: 28px; padding: 0; border-radius: 9999px; justify-content: center;
+      background: rgba(24,24,27,.85); opacity: 0; transition: opacity .15s, background-color .15s; }
+    .act svg { width: 14px; height: 14px; fill: currentColor; }
+    .tile:hover .act, .act:focus-visible { opacity: 1; }
+    .del { left: 6px; color: #f87171; }
+    .ren { left: 38px; color: #d4d4d8; }
+    .act:hover { background: #18181b; }
+    .confirm { position: absolute; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center;
+      gap: 8px; background: rgba(24,24,27,.92); cursor: default; }
+    .confirm span { font-size: 13px; font-weight: 500; color: #fafafa; }
+    .confirm .row { display: flex; gap: 8px; }
+    .tile.asking .confirm { display: flex; }
+    .tile.asking .act { display: none; }
+    button.danger-solid { background: #dc2626; color: #fff; }
+    button.danger-solid:hover { background: #b91c1c; }
+    input.rename { position: absolute; left: 8px; right: 8px; bottom: 8px; height: 28px; font-size: 12px; }
+  `;
+
+  const playmatCtx = new WeakMap(); // Settings dialog -> { dlg, list, trigger, active, host, pending }
+
+  function scanPlaymatSettings() {
+    for (const dlg of document.querySelectorAll('[role="dialog"][data-state="open"]')) {
+      const free = dlg.querySelector('[role="tab"][data-value="free"]');
+      const list = free && free.closest('[role="tablist"]');
+      if (!list || !list.querySelector('[role="tab"][data-value="patreon"]') || list.querySelector('[data-ea-playmat-tab]')) continue;
+      injectPlaymatTab(dlg, list, free);
+    }
+    // Settings closed without saving: drop the preview.
+    const tab = document.querySelector('[data-ea-playmat-tab]');
+    const open = tab && tab.closest('[role="dialog"]') && tab.closest('[role="dialog"]').getAttribute('data-state') === 'open';
+    if (previewPlaymat !== undefined && !open) {
+      previewPlaymat = undefined;
+      schedulePlaymats();
+    }
+  }
+
+  function injectPlaymatTab(dlg, list, template) {
+    const trigger = template.cloneNode(true);
+    trigger.dataset.eaPlaymatTab = '1';
+    trigger.dataset.value = 'edhproxy-custom';
+    trigger.id = 'edhproxy-playmat-tab';
+    trigger.removeAttribute('data-selected');
+    trigger.removeAttribute('data-focus');
+    trigger.setAttribute('aria-selected', 'false');
+    trigger.tabIndex = -1;
+    list.insertBefore(trigger, list.querySelector('[data-part="indicator"]'));
+
+    const ctx = { dlg, list, trigger, active: false, host: null, pending: undefined };
+    ctx.setLabel = () => { trigger.textContent = `${t('custom')} (${playmats.length})`; };
+    ctx.grid = () => list.closest('[data-part="root"]').nextElementSibling;
+    ctx.setLabel();
+    playmatCtx.set(dlg, ctx);
+
+    // Keep edhplay's tabs machinery out of it; we drive this tab ourselves.
+    for (const type of ['pointerdown', 'mousedown', 'keydown', 'focus']) trigger.addEventListener(type, (e) => e.stopPropagation());
+    trigger.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      showCustomPlaymats(ctx, true);
+    });
+    // Any of edhplay's own filters takes the view back.
+    list.addEventListener('click', (e) => {
+      const tab = e.target.closest('[role="tab"]');
+      if (tab && tab !== trigger) showCustomPlaymats(ctx, false);
+    }, true);
+    // Picking one of edhplay's playmats replaces the custom one.
+    ctx.grid().addEventListener('click', (e) => {
+      if (e.target.closest('.group') && (activePlaymat || ctx.pending)) choosePlaymat(ctx, null);
+    }, true);
+  }
+
+  function showCustomPlaymats(ctx, on) {
+    if (on === ctx.active) return;
+    ctx.active = on;
+    const grid = ctx.grid();
+    const indicator = ctx.list.querySelector('[data-part="indicator"]');
+    ctx.trigger.setAttribute('aria-selected', String(on));
+    ctx.trigger.toggleAttribute('data-selected', on);
+    if (on) {
+      // The selected tab's underline is a ::before, which inline styles can't reach. An unlayered
+      // rule outranks Chakra's layered styles.
+      if (!document.getElementById('edhproxy-tab-style')) {
+        const style = document.createElement('style');
+        style.id = 'edhproxy-tab-style';
+        style.textContent = '[data-ea-dimmed]::before { content: none; }';
+        document.head.append(style);
+      }
+      // edhplay still thinks its tab is selected; make it look unselected while ours is shown.
+      for (const tab of ctx.list.querySelectorAll('[role="tab"][aria-selected="true"]')) {
+        if (tab === ctx.trigger) continue;
+        tab.style.setProperty('color', 'rgb(161, 161, 170)', 'important');
+        tab.style.setProperty('background', 'transparent', 'important');
+        tab.dataset.eaDimmed = '1';
+      }
+      if (indicator) indicator.style.setProperty('opacity', '0', 'important');
+      grid.style.setProperty('display', 'none', 'important');
+      ctx.host = renderPlaymatPanel(ctx);
+      grid.after(ctx.host);
+      refreshCustomViews();
+    } else {
+      for (const tab of ctx.list.querySelectorAll('[data-ea-dimmed]')) {
+        tab.style.removeProperty('color');
+        tab.style.removeProperty('background');
+        delete tab.dataset.eaDimmed;
+      }
+      if (indicator) indicator.style.removeProperty('opacity');
+      grid.style.removeProperty('display');
+      if (ctx.host) ctx.host.remove();
+      ctx.host = null;
+    }
+  }
+
+  // id = a custom playmat, null = back to edhplay's. Choosing what is already in use is no change.
+  function choosePlaymat(ctx, id) {
+    ctx.pending = id === activePlaymat ? undefined : id;
+    previewPlaymat = ctx.pending;
+    schedulePlaymats();
+    refreshCustomViews();
+  }
+
+  function renderPlaymatPanel(ctx) {
+    const host = document.createElement('div');
+    host.dataset.eaPlaymatPanel = '1';
+    const root = host.attachShadow({ mode: 'open' });
+    root.innerHTML = `<style>${PLAYMAT_CSS}</style><p class="note"></p><div class="grid"></div><div class="form"></div>`;
+    for (const type of ['keydown', 'keyup', 'keypress']) root.addEventListener(type, (e) => e.stopPropagation());
+    const gridEl = root.querySelector('.grid');
+
+    const view = {
+      host,
+      render() {
+        const pair = footerPairs(ctx.dlg)[0];
+        root.querySelector('.note').textContent = t('pm_note', { save: (pair && pair.confirm.textContent.trim()) || 'Save' });
+        ctx.setLabel();
+        const current = ctx.pending !== undefined ? ctx.pending : activePlaymat;
+        gridEl.textContent = '';
+        for (const mat of playmats) gridEl.append(playmatTile(ctx, mat, current === mat.id));
+        const add = document.createElement('div');
+        add.className = 'tile add';
+        add.tabIndex = 0;
+        add.setAttribute('role', 'button');
+        add.title = t('pm_addTitle');
+        add.textContent = '+ ' + t('add');
+        add.onclick = () => openPlaymatForm(root.querySelector('.form'), (mat) => choosePlaymat(ctx, mat.id));
+        add.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); add.onclick(); } };
+        gridEl.append(add);
+      },
+    };
+    customViews.add(view);
+    view.render();
+    return host;
+  }
+
+  function playmatTile(ctx, mat, selected) {
+    const tile = document.createElement('div');
+    tile.className = 'tile' + (selected ? ' selected' : '');
+    tile.tabIndex = 0;
+    tile.setAttribute('role', 'button');
+    const img = document.createElement('img');
+    img.alt = '';
+    img.referrerPolicy = 'no-referrer';
+    img.src = directImageUrl(mat.u);
+    const cap = document.createElement('div');
+    cap.className = 'cap';
+    cap.textContent = mat.n || t('unnamed');
+    tile.title = mat.n || '';
+    tile.append(img, cap);
+    tile.insertAdjacentHTML('beforeend', `<div class="sel"></div><div class="check">${CHECK_SVG}</div>`);
+    tile.onclick = () => choosePlaymat(ctx, mat.id);
+    tile.onkeydown = (e) => { if (e.target === tile && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); tile.onclick(); } };
+
+    const del = document.createElement('button');
+    del.className = 'act del';
+    del.innerHTML = CLOSE_SVG;
+    del.title = t('deleteTitle');
+    del.setAttribute('aria-label', t('deleteTitle'));
+    const ask = document.createElement('div');
+    ask.className = 'confirm';
+    ask.innerHTML = '<span></span><div class="row"><button class="danger-solid sm yes"></button><button class="subtle sm no"></button></div>';
+    ask.querySelector('span').textContent = t('deleteAsk');
+    ask.querySelector('.yes').textContent = t('delete');
+    ask.querySelector('.no').textContent = t('cancel');
+    ask.onclick = (e) => e.stopPropagation();
+    ask.onkeydown = (e) => e.stopPropagation();
+    ask.querySelector('.yes').onclick = () => deletePlaymat(ctx, mat.id);
+    ask.querySelector('.no').onclick = () => tile.classList.remove('asking');
+    del.onclick = (e) => { e.stopPropagation(); tile.classList.add('asking'); ask.querySelector('.no').focus(); };
+
+    const ren = document.createElement('button');
+    ren.className = 'act ren';
+    ren.innerHTML = PENCIL_SVG;
+    ren.title = t('renameTitle');
+    ren.setAttribute('aria-label', t('rename'));
+    ren.onclick = (e) => {
+      e.stopPropagation();
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'rename';
+      input.maxLength = 40;
+      input.placeholder = t('renamePlaceholder');
+      input.value = mat.n || '';
+      input.onclick = (ev) => ev.stopPropagation();
+      tile.append(input);
+      input.focus();
+      input.select();
+      let done = false;
+      const finish = async (save) => {
+        if (done) return;
+        done = true;
+        input.remove();
+        if (!save) return;
+        const n = input.value.trim().slice(0, 40);
+        playmats = playmats.map(p => (p.id === mat.id ? { ...p, n: n || undefined } : p));
+        await chrome.storage.local.set({ playmats });
+      };
+      input.onkeydown = (ev) => {
+        if (ev.key === 'Enter') { ev.preventDefault(); finish(true); }
+        if (ev.key === 'Escape') { ev.preventDefault(); finish(false); }
+      };
+      input.onblur = () => finish(true);
+    };
+    tile.append(ask, del, ren);
+    return tile;
+  }
+
+  async function deletePlaymat(ctx, id) {
+    playmats = playmats.filter(p => p.id !== id);
+    if (ctx.pending === id) { ctx.pending = undefined; previewPlaymat = undefined; }
+    const changes = { playmats };
+    if (activePlaymat === id) changes.playmat = null;
+    await chrome.storage.local.set(changes);
+  }
+
+  // Same look as the art form; the preview is a 16:9 playmat.
+  function openPlaymatForm(mount, onSaved) {
+    if (mount.firstChild) return;
+    const host = document.createElement('div');
+    const root = host.attachShadow({ mode: 'open' });
+    root.innerHTML = `
+      <style>${FORM_CSS} .previews img { width: 220px; aspect-ratio: 16/9; border-radius: 12px; }</style>
+      <div class="box" role="group" aria-label="${t('pm_formTitle')}">
+        <div class="header"><h2>${t('pm_formTitle')}</h2><div class="sub">${t('pm_formSub')}</div></div>
+        <div class="body"><div class="row">
+          <div class="previews"><figure><img class="prev" alt=""><figcaption>${t('preview')}</figcaption></figure></div>
+          <div class="form">
+            <label class="field">${t('nameLabel')} <span class="hint">${t('nameHint')}</span>
+              <input type="text" class="name" maxlength="40" spellcheck="false"></label>
+            <label class="field">${t('urlLabel')} <span class="hint">${t('urlHint')}</span>
+              <input type="text" class="url" placeholder="https://i.imgur.com/....png" spellcheck="false"></label>
+            <label class="field">${t('fileLabel')}<input type="file" class="file" accept="image/*"></label>
+            <div class="warn"></div>
+          </div>
+        </div></div>
+        <div class="footer"><button class="cancel">${t('cancel')}</button><button class="primary save">${t('save')}</button></div>
+      </div>`;
+    mount.appendChild(host);
+    const $ = (sel) => root.querySelector(sel);
+    const nameInput = $('.name'), urlInput = $('.url'), fileInput = $('.file'), warn = $('.warn'), prev = $('.prev');
+    let fileData = null;
+    let previewSeq = 0;
+    const close = () => host.remove();
+    root.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); close(); } });
+    for (const type of ['keydown', 'keyup', 'keypress']) root.addEventListener(type, (e) => e.stopPropagation());
+    $('.cancel').onclick = close;
+    const source = () => fileData || directImageUrl(urlInput.value.trim());
+
+    async function updatePreview() {
+      const seq = ++previewSeq;
+      const u = source();
+      warn.textContent = '';
+      if (!u) { prev.removeAttribute('src'); return; }
+      if (!fileData && !/^https:\/\//i.test(u)) { warn.textContent = t('errHttps'); return; }
+      try {
+        await loadImage(u);
+        if (seq === previewSeq) prev.src = u;
+      } catch {
+        if (seq === previewSeq) warn.textContent = t(isDriveLink(urlInput.value.trim()) ? 'errDrive' : 'errLoad');
+      }
+    }
+    let typingTimer = null;
+    urlInput.addEventListener('input', () => {
+      fileData = null;
+      fileInput.value = '';
+      clearTimeout(typingTimer);
+      typingTimer = setTimeout(updatePreview, 400);
+    });
+    fileInput.addEventListener('change', async () => {
+      const f = fileInput.files[0];
+      if (!f) return;
+      fileData = await shrinkFile(f, PLAYMAT_WIDTH);
+      urlInput.value = '';
+      if (!nameInput.value) nameInput.value = f.name.replace(/\.[^.]+$/, '').slice(0, 40);
+      updatePreview();
+    });
+    $('.save').onclick = async () => {
+      const u = source();
+      if (!u) { warn.textContent = t('errMissing'); return; }
+      if (!fileData && !/^https:\/\//i.test(u)) { warn.textContent = t('errHttps'); return; }
+      const mat = { id: crypto.randomUUID(), u, t: Date.now() };
+      const n = nameInput.value.trim();
+      if (n) mat.n = n;
+      playmats = [mat, ...playmats];
+      try {
+        await chrome.storage.local.set({ playmats });
+      } catch (e) {
+        warn.textContent = t('errSave', { msg: e.message });
+        return;
+      }
+      close();
+      onSaved(mat);
+    };
+    nameInput.focus();
+  }
+
+  // Save Preferences commits the custom choice; edhplay saves its own settings as usual.
+  window.addEventListener('click', (e) => {
+    const dlg = e.target.closest && e.target.closest('[role="dialog"]');
+    const ctx = dlg && playmatCtx.get(dlg);
+    if (!ctx || ctx.pending === undefined) return;
+    if (!footerPairs(dlg).some(p => p.confirm.contains(e.target))) return;
+    const choice = ctx.pending;
+    ctx.pending = undefined;
+    previewPlaymat = undefined;
+    chrome.storage.local.set({ playmat: choice });
+  }, true);
+
   // ---------- foil toggle on deck pages: card menu item and the F key ----------
 
   // Deck cards are [data-deck-card-id] elements holding the card's Scryfall image.
@@ -1176,16 +1709,24 @@
     return null;
   }
 
-  async function foilNameOf(card) {
+  async function isOwnFoil(card) {
     const names = await lookupName(card.id);
-    return names ? names[card.face === 'back' ? 1 : 0].toLowerCase() : null;
+    return !!names && ownFoilFor(foilKeys(names), currentDeck());
   }
 
+  // Foil is toggled for the deck in view only.
   async function toggleFoil(card) {
-    const name = await foilNameOf(card);
-    if (!name) return;
-    if (ownFoils[name]) delete ownFoils[name]; else ownFoils[name] = true;
-    await chrome.storage.local.set({ foils: ownFoils });
+    const names = await lookupName(card.id);
+    const deck = currentDeck();
+    if (!names || !deck) return;
+    const keys = foilKeys(names);
+    const on = !ownFoilFor(keys, deck);
+    const forDeck = deckFoils[deck] || (deckFoils[deck] = {});
+    for (const k of keys) delete forDeck[k];
+    // Only store what differs from the all-decks setting.
+    if (on !== keys.some(k => ownFoils[k])) forDeck[keys[0]] = on;
+    if (!Object.keys(forDeck).length) delete deckFoils[deck];
+    await chrome.storage.local.set({ deckFoils });
   }
 
   const foilActive = () => settings.foilEnabled && onDeckPage();
@@ -1236,7 +1777,7 @@
     kbd.textContent = 'F';
     const label = document.createTextNode(t('foilAdd'));
     item.replaceChildren(label, kbd);
-    foilNameOf(card).then((name) => { if (name && ownFoils[name]) label.textContent = t('foilRemove'); });
+    isOwnFoil(card).then((on) => { if (on) label.textContent = t('foilRemove'); });
 
     item.addEventListener('pointerenter', () => item.setAttribute('data-highlighted', ''));
     item.addEventListener('pointerleave', () => item.removeAttribute('data-highlighted'));
@@ -1264,9 +1805,23 @@
     }
     if (changes.library) library = changes.library.newValue || {};
     if (changes.arts || changes.library) refreshCustomViews();
+    if (changes.deckArts || changes.deckFoils) {
+      if (changes.deckArts) deckArts = changes.deckArts.newValue || {};
+      if (changes.deckFoils) deckFoils = changes.deckFoils.newValue || {};
+      scheduleScan();
+      refreshCustomViews();
+      if (sync) publishSoon(800);
+    }
     if (changes.foils) {
       ownFoils = changes.foils.newValue || {};
       scheduleScan();
+      if (sync) publishSoon(800);
+    }
+    if (changes.playmats || changes.playmat) {
+      if (changes.playmats) playmats = changes.playmats.newValue || [];
+      if (changes.playmat) activePlaymat = changes.playmat.newValue || null;
+      schedulePlaymats();
+      refreshCustomViews();
       if (sync) publishSoon(800);
     }
     if (changes.settings) {
@@ -1309,8 +1864,12 @@
   });
 
   async function init() {
-    const data = await chrome.storage.local.get(['settings', 'arts', 'library', 'foils', 'nameCache', 'clientId', 'hintCustomShown']);
+    const data = await chrome.storage.local.get(['settings', 'arts', 'library', 'foils', 'deckArts', 'deckFoils', 'playmats', 'playmat', 'nameCache', 'clientId', 'hintCustomShown']);
     ownFoils = data.foils || {};
+    deckArts = data.deckArts || {};
+    deckFoils = data.deckFoils || {};
+    playmats = data.playmats || [];
+    activePlaymat = data.playmat || null;
     settings = { ...DEFAULT_SETTINGS, ...(data.settings || {}) };
     ownArts = data.arts || {};
     library = data.library || {};
@@ -1338,12 +1897,15 @@
     }
     observer.observe(document.documentElement, {
       subtree: true, childList: true, attributes: true,
-      attributeFilter: ['src', 'data-ea-owner', 'data-ea-local-player'],
+      attributeFilter: ['src', 'data-ea-owner', 'data-ea-local-player', 'data-ea-local-deck'],
     });
     scanAll();
     scanPrintDialogs();
+    applyPlaymats();
     checkRoom();
     setInterval(checkRoom, 1000);
+    // Closing Settings removes nodes, which the observer above ignores; drop a stale preview here.
+    setInterval(() => { if (previewPlaymat !== undefined) scanPlaymatSettings(); }, 1000);
     setInterval(shareLocalArts, 5 * 60 * 1000);
     let lang = EA_I18N.pick(siteLang());
     chrome.storage.local.set({ siteLang: lang });

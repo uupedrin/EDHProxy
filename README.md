@@ -3,9 +3,8 @@
 </p>
 
 <h1 align="center">EDHProxy</h1>
-
 <p align="center">
-  Use your own card art (alters, proxies) on <a href="https://edhplay.com">edhplay.com</a><br>
+  Use your own art (alters, proxies, playmats) on <a href="https://edhplay.com">edhplay.com</a><br>
   and share it with the players in your room who also use EDHProxy.
 </p>
 
@@ -24,6 +23,7 @@
 - **A Custom folder in "Change Printing".** Every card keeps a folder with all the arts you have uploaded for it. Pick one, then **Confirm** — just like choosing a printing.
 - **Shared in game.** Players in the same room who use EDHProxy see your arts on *your* cards, and you see theirs on *their* cards. Everyone else sees the normal cards.
 - **Local names.** Give each art a name to tell them apart. Names stay in your browser.
+- **Custom playmats.** Upload your own playmats in edhplay's Settings → Playmats → **Custom**; your opponents with EDHProxy see them too.
 - **Foil.** Mark any card as foil (custom art or not) from its menu or with the **F** key; it gets the same rainbow sheen Archidekt uses, and players in your room see it too.
 - **Follows the site's language.** English, Spanish, Italian, German, French, Portuguese, Japanese and Dutch — the same languages edhplay offers.
 - **One-click updates.** A badge on the toolbar icon tells you when there's a new version.
@@ -54,7 +54,9 @@ Nothing is installed on your system and nothing runs outside the browser. The ex
 1. Open one of your decks (`edhplay.com/decks/<id>`), click a card and choose **Change Printing**.
 2. Before the printings there's a **Custom** folder. Open it.
 3. Click **+ Add**, paste an image URL (https) or choose a file, optionally give it a name, and **Save**.
-4. The new art is selected (blue border). Click edhplay's **Confirm** to use it on all your copies of the card, or **Cancel** to leave things as they were.
+4. The new art is selected (blue border). Click edhplay's **Confirm** to use it for this card in **this deck**, or **Cancel** to leave things as they were. Tick **Use in all my decks** in the panel to apply it to every deck instead.
+
+Each deck keeps its own choice, so the same card can have different arts in different decks. Deck covers on My Decks follow each deck's choice, and in a game EDHProxy uses (and shares) the choices of the deck you joined with.
 
 In the Custom panel:
 
@@ -68,11 +70,15 @@ In the Custom panel:
 
 Choosing a different printing and confirming switches the card back to normal art. Arts are edited on deck pages only; in a game they are just shown.
 
-The popup (click the extension icon) shows whether you're in a room, who else has the extension, your arts, and lets you export/import them.
+The popup (click the extension icon) shows whether you're in a room, who else has the extension, your arts, and lets you export/import them. Under **Extension** you can **Check for updates** right away or **Clear data** (deletes all your arts, foils and playmats; your settings stay).
+
+### Custom playmats
+
+Open edhplay's **Settings → Playmats**. Next to All / Free / Patreon there's a **Custom** tab with the playmats you uploaded. Click **+ Add** to upload one (image URL or a file; wide 16:9 images work best), pick it and click **Save Preferences**. Choosing one of edhplay's playmats and saving switches back. During a game, players in your room with EDHProxy see your playmat on your side of the table.
 
 ### Foil
 
-On your deck page, open a card's menu (right-click or the **⋮** button) and choose **Foil**, or hover the card and press **F**. Do the same again to remove it. Foil applies to all your copies of the card, with or without custom art, and is shared with players in your room like arts are. You can turn the feature off in the popup (**Allow foil**).
+On your deck page, open a card's menu (right-click or the **⋮** button) and choose **Foil**, or hover the card and press **F**. Do the same again to remove it. Foil applies to that card in that deck only (with or without custom art), and is shared with players in your room like arts are. You can turn the feature off in the popup (**Allow foil**).
 
 ## How sharing works
 

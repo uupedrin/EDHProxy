@@ -3,6 +3,7 @@
 //   <img data-ea-owner="<player id>">          owner of the card shown by that image
 //   <html data-ea-local-player="<player id>">  the player using this browser
 //   <html data-ea-players='{"<player id>":"<username>"}'>  usernames of everyone in the game
+//   <html data-ea-local-deck="<deck id>">      the deck this browser's player joined with
 (() => {
   'use strict';
 
@@ -45,27 +46,28 @@
     return null;
   }
 
-  // edhplay keeps players (id -> username) and localPlayerId in a zustand store in its own
-  // lazy-loaded chunk. Importing the same URL returns the same module instance, so same store.
-  let metaStore = null;
-  let metaStoreLoading = false;
-  async function loadMetaStore() {
-    if (metaStore || metaStoreLoading) return;
-    const rx = /\/assets\/playerMetadataStore-[\w-]+\.js$/;
-    const url = performance.getEntriesByType('resource').map(r => r.name).find(n => rx.test(n))
-      || [...document.querySelectorAll('link[href]')].map(l => l.href).find(h => rx.test(h));
+  // edhplay keeps game state in zustand stores, each in its own lazy-loaded chunk. Importing the
+  // same URL returns the same module instance, so the same store:
+  //   playerMetadataStore: players (id -> username) and localPlayerId
+  //   lobbyStore: players (id -> { deckId, ... }), i.e. which deck everyone joined with
+  const stores = {};
+  const storeLoading = {};
+  async function loadStore(key, fileRx, isIt) {
+    if (stores[key] || storeLoading[key]) return;
+    const url = performance.getEntriesByType('resource').map(r => r.name).find(n => fileRx.test(n))
+      || [...document.querySelectorAll('link[href]')].map(l => l.href).find(h => fileRx.test(h));
     if (!url) return;
-    metaStoreLoading = true;
+    storeLoading[key] = true;
     try {
       const mod = await import(url);
       for (const v of Object.values(mod)) {
-        const s = v && typeof v.getState === 'function' && v.getState();
-        if (s && s.players instanceof Map && 'localPlayerId' in s) { metaStore = v; break; }
+        const st = v && typeof v.getState === 'function' && v.getState();
+        if (st && isIt(st)) { stores[key] = v; break; }
       }
     } catch (e) {
-      console.warn('[EDHProxy] could not read the game players', e);
+      console.warn('[EDHProxy] could not read edhplay store', key, e);
     } finally {
-      metaStoreLoading = false;
+      storeLoading[key] = false;
     }
   }
 
@@ -79,10 +81,14 @@
   }
 
   function refresh() {
-    loadMetaStore();
-    const state = metaStore && metaStore.getState();
+    loadStore('meta', /\/assets\/playerMetadataStore-[\w-]+\.js$/, st => st.players instanceof Map && 'localPlayerId' in st);
+    loadStore('lobby', /\/assets\/lobbyStore-[\w-]+\.js$/, st => st.players instanceof Map && 'setPlayerDeck' in st);
+    const state = stores.meta && stores.meta.getState();
     const local = (state && state.localPlayerId) || findLocalPlayer();
     if (local) setRootData('eaLocalPlayer', String(local));
+    const lobby = stores.lobby && stores.lobby.getState();
+    const mine = lobby && local && lobby.players.get(local);
+    setRootData('eaLocalDeck', mine && mine.deckId ? String(mine.deckId) : null);
     if (state) {
       const names = {};
       for (const [id, p] of state.players) if (p && p.username) names[id] = String(p.username);

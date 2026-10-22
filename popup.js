@@ -95,8 +95,8 @@ async function renderStatus() {
 }
 
 $('export').onclick = async () => {
-  const { library = {}, foils = {} } = await chrome.storage.local.get(['library', 'foils']);
-  const blob = new Blob([JSON.stringify({ version: 1, arts, library, foils }, null, 2)], { type: 'application/json' });
+  const { library = {}, foils = {}, deckArts = {}, deckFoils = {}, playmats = [], playmat = null } = await chrome.storage.local.get(['library', 'foils', 'deckArts', 'deckFoils', 'playmats', 'playmat']);
+  const blob = new Blob([JSON.stringify({ version: 1, arts, library, foils, deckArts, deckFoils, playmats, playmat }, null, 2)], { type: 'application/json' });
   const a = el('a', { href: URL.createObjectURL(blob), download: 'edhproxy-arts.json' });
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
@@ -113,7 +113,23 @@ $('importFile').onchange = async () => {
     for (const [k, a] of Object.entries(incoming)) {
       if (/^(id:|name:)/.test(k) && a && validUrl(a.u)) arts[k] = a;
     }
-    const { library = {}, foils = {} } = await chrome.storage.local.get(['library', 'foils']);
+    const { library = {}, foils = {}, deckArts = {}, deckFoils = {}, playmats = [] } = await chrome.storage.local.get(['library', 'foils', 'deckArts', 'deckFoils', 'playmats']);
+    const isDeckId = (d) => /^[0-9a-f-]{36}$/i.test(d);
+    for (const [deck, entries] of Object.entries(data.deckArts || {})) {
+      if (!isDeckId(deck) || !entries || typeof entries !== 'object') continue;
+      for (const [k, a] of Object.entries(entries)) {
+        if (/^name:/.test(k) && a && (a.none === true || validUrl(a.u))) (deckArts[deck] || (deckArts[deck] = {}))[k] = a;
+      }
+    }
+    for (const [deck, entries] of Object.entries(data.deckFoils || {})) {
+      if (!isDeckId(deck) || !entries || typeof entries !== 'object') continue;
+      for (const [name, on] of Object.entries(entries)) if (typeof on === 'boolean') (deckFoils[deck] || (deckFoils[deck] = {}))[name.toLowerCase()] = on;
+    }
+    for (const p of Array.isArray(data.playmats) ? data.playmats : []) {
+      if (p && typeof p.id === 'string' && validUrl(p.u) && !playmats.some(x => x.id === p.id || x.u === p.u)) {
+        playmats.push({ id: p.id, u: p.u, t: p.t || Date.now(), ...(typeof p.n === 'string' && p.n ? { n: p.n.slice(0, 40) } : {}) });
+      }
+    }
     for (const [name, on] of Object.entries(data.foils || {})) if (on === true && name.length <= 200) foils[name.toLowerCase()] = true;
     for (const [name, list] of Object.entries(data.library || {})) {
       if (!Array.isArray(list)) continue;
@@ -127,12 +143,54 @@ $('importFile').onchange = async () => {
       }
       if (merged.length) library[name] = merged;
     }
-    await chrome.storage.local.set({ arts, library, foils });
+    await chrome.storage.local.set({ arts, library, foils, deckArts, deckFoils, playmats });
     renderArts();
   } catch (e) {
     alert(t('importError', { msg: e.message }));
   }
   $('importFile').value = '';
+};
+
+function showUpdate(update) {
+  $('update').hidden = !update;
+  if (!update) return;
+  $('updateTitle').textContent = t('updateAvailable', { version: update.version });
+  $('updateLink').href = update.url;
+}
+
+$('updateNow').onclick = () => chrome.tabs.create({ url: chrome.runtime.getURL('update.html') });
+
+$('checkUpdate').onclick = async () => {
+  const button = $('checkUpdate'), out = $('checkResult');
+  button.disabled = true;
+  out.hidden = false;
+  out.textContent = t('checking');
+  let result = 'error';
+  try {
+    result = (await chrome.runtime.sendMessage({ type: 'checkUpdate' })).result;
+  } catch {
+    // The service worker didn't answer; report it as a failed check.
+  }
+  const { update } = await chrome.storage.local.get('update');
+  showUpdate(result === 'available' ? update : null);
+  out.textContent = result === 'available' ? t('updateAvailable', { version: update.version })
+    : result === 'latest' ? t('upToDate') : t('checkFailed');
+  button.disabled = false;
+};
+
+// Everything the user made (arts, foils, playmats) and the card-name cache. Settings, the room
+// id and the updater's folder stay.
+const USER_DATA = ['arts', 'library', 'foils', 'deckArts', 'deckFoils', 'playmats', 'playmat', 'nameCache', 'hintCustomShown'];
+
+$('clearData').onclick = () => { $('clearConfirm').hidden = false; };
+$('clearCancel').onclick = () => { $('clearConfirm').hidden = true; };
+$('clearYes').onclick = async () => {
+  await chrome.storage.local.remove(USER_DATA);
+  arts = {};
+  renderArts();
+  $('clearConfirm').hidden = true;
+  $('checkResult').hidden = false;
+  $('checkResult').textContent = t('cleared');
 };
 
 for (const id of ['syncEnabled', 'showOthers', 'uploadLocal', 'foilEnabled']) $(id).addEventListener('change', saveSettings);
@@ -143,12 +201,7 @@ $('server').addEventListener('change', saveSettings);
   if (data.siteLang) lang = data.siteLang;
   applyStaticText();
   $('version').textContent = 'v' + chrome.runtime.getManifest().version;
-  if (data.update) {
-    $('update').hidden = false;
-    $('updateTitle').textContent = t('updateAvailable', { version: data.update.version });
-    $('updateLink').href = data.update.url;
-    $('updateNow').onclick = () => chrome.tabs.create({ url: chrome.runtime.getURL('update.html') });
-  }
+  showUpdate(data.update);
   settings = { ...DEFAULT_SETTINGS, ...(data.settings || {}) };
   arts = data.arts || {};
   $('syncEnabled').checked = settings.syncEnabled;

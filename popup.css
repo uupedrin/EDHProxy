@@ -66,4 +66,12 @@ button.remove:hover { background: rgba(248, 113, 113, .1); }
 .update .buttons { align-items: center; margin-top: 0; }
 button.accent { background: var(--accent); color: #fff; }
 button.accent:hover { background: var(--accent-hover); }
+button.danger { color: var(--bad); }
+button.danger:hover { background: rgba(248, 113, 113, .1); }
+button.danger-solid { background: #dc2626; color: #fff; }
+button.danger-solid:hover { background: #b91c1c; }
+button:disabled { opacity: .6; cursor: default; }
+.result { margin-top: 8px; }
+.confirm { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+.confirm .small { color: var(--text); }
 .disclaimer { color: var(--dim); font-size: 11px; line-height: 1.4; margin-top: 4px; }

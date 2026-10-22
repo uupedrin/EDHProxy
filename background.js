@@ -49,11 +49,17 @@ function paintFoil(ctx, w, h) {
 // Renders a card image for display: shrunk to the width Scryfall would serve for that spot (a big
 // image squeezed straight into a thumbnail looks jagged) and/or with the foil overlay. Returns
 // null when nothing needs to change (no foil and already about that size).
-async function renderImage(url, width, foil) {
+// asData: always return a data URL, even when nothing changes. Playmats are CSS backgrounds,
+// which can't skip the Referer like <img referrerpolicy> does, and hosts like Scryfall or imgur
+// refuse hotlinks from edhplay; a data URL sidesteps that.
+async function renderImage(url, width, foil, asData) {
   const blob = await (await fetch(url, { credentials: 'omit' })).blob();
   const full = await createImageBitmap(blob);
   const shrink = width && full.width > width * 1.2;
-  if (!shrink && !foil) { full.close(); return null; }
+  if (!shrink && !foil) {
+    full.close();
+    return asData ? blobToDataUrl(blob) : null;
+  }
   let bitmap = full;
   if (shrink) {
     const height = Math.round(full.height * width / full.width);
@@ -65,12 +71,15 @@ async function renderImage(url, width, foil) {
   ctx.drawImage(bitmap, 0, 0);
   bitmap.close();
   if (foil) paintFoil(ctx, canvas.width, canvas.height);
-  const out = await canvas.convertToBlob({ type: 'image/webp', quality: 0.92 });
+  return blobToDataUrl(await canvas.convertToBlob({ type: 'image/webp', quality: 0.92 }));
+}
+
+function blobToDataUrl(blob) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(reader.result);
     reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(out);
+    reader.readAsDataURL(blob);
   });
 }
 
@@ -118,18 +127,21 @@ async function showUpdateBadge(update) {
 
 const manifestName = () => chrome.runtime.getManifest().name;
 
+// Returns 'available', 'latest' or 'error' (for the popup's "Check for updates").
 async function checkForUpdate() {
-  if (!/^[\w.-]+\/[\w.-]+$/.test(REPO)) return;
+  if (!/^[\w.-]+\/[\w.-]+$/.test(REPO)) return 'error';
   try {
     const res = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, { headers: { Accept: 'application/vnd.github+json' } });
-    if (!res.ok) return;
+    if (!res.ok) return 'error';
     const release = await res.json();
     const latest = String(release.tag_name || '').replace(/^v/, '');
     const update = isNewer(latest, chrome.runtime.getManifest().version) ? { version: latest, url: release.html_url } : null;
     await chrome.storage.local.set({ update });
     await showUpdateBadge(update);
+    return update ? 'available' : 'latest';
   } catch {
     // Offline or rate-limited; the next check will try again.
+    return 'error';
   }
 }
 
@@ -160,7 +172,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (msg.type === 'cardInfo') sendResponse({ ok: true, ...(await cardInfo(msg.id)) });
       else if (msg.type === 'publish') sendResponse({ ok: await publish(msg.url, msg.body) });
       else if (msg.type === 'litterbox') sendResponse({ ok: true, url: await litterbox(msg.dataUrl) });
-      else if (msg.type === 'render') sendResponse({ ok: true, url: await renderImage(msg.url, msg.width, msg.foil) });
+      else if (msg.type === 'checkUpdate') sendResponse({ ok: true, result: await checkForUpdate() });
+      else if (msg.type === 'render') sendResponse({ ok: true, url: await renderImage(msg.url, msg.width, msg.foil, msg.asData) });
       else sendResponse({ ok: false, error: 'unknown message' });
     } catch (e) {
       sendResponse({ ok: false, error: String(e && e.message || e) });
