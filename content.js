@@ -26,18 +26,33 @@
   let deckFoils = {};  // deckId -> { <lowercase name>: true | false }
   let playmats = [];   // [{ id, u, n?, t }]   playmats uploaded by this user
   let activePlaymat = null; // id of the custom playmat in use, or null for edhplay's own
+  let sleeves = [];    // [{ id, u? | c?, n?, t }]   custom sleeves: a cropped image (u) or a matte color (c)
+  let activeSleeve = null;  // id of the custom sleeve in use, or null for edhplay's own
   let nameCache = {};  // uuid -> [frontName, backName]
   let clientId = null;
-  const remote = new Map();      // clientId -> { player, arts, foils: Set<name>, playmat, rev, pend }
+  const remote = new Map();      // clientId -> { player, arts, foils: Set<name>, playmat, sleeve, rev, pend }
   const pendingNames = new Set();
 
-  const send = (msg) => new Promise((resolve, reject) => {
+  const sendOnce = (msg) => new Promise((resolve, reject) => {
     chrome.runtime.sendMessage(msg, (res) => {
-      if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
+      if (chrome.runtime.lastError) return reject(Object.assign(new Error(chrome.runtime.lastError.message), { channel: true }));
       if (!res || !res.ok) return reject(new Error(res ? res.error : 'no response'));
       resolve(res);
     });
   });
+
+  // The browser may stop the service worker while requests are pending ("message channel closed",
+  // "Receiving end does not exist"); the next message starts it again, so retry those.
+  async function send(msg, tries = 3) {
+    for (let i = 1; ; i++) {
+      try {
+        return await sendOnce(msg);
+      } catch (e) {
+        if (!e.channel || i >= tries || !/channel closed|Receiving end/i.test(e.message)) throw e;
+        await new Promise(r => setTimeout(r, 500 * i));
+      }
+    }
+  }
 
   // ---------- art resolution ----------
 
@@ -170,7 +185,9 @@
       scheduleScan();
       return res.names;
     } catch (e) {
-      console.warn('[EDHProxy] card name lookup failed', id, e);
+      // Scryfall doesn't know it: remember that instead of asking again on every change.
+      if (/not found/i.test(e.message)) nameCache[id] = null;
+      else console.warn('[EDHProxy] card name lookup failed', id, e);
       return null;
     } finally {
       pendingNames.delete(id);
@@ -244,6 +261,10 @@
         setArtCrop(img, false);
         img.src = orig;
       }
+      return;
+    }
+    if (isSleeveImg(img)) {
+      processSleeve(img);
       return;
     }
     const src = img.getAttribute('src') || '';
@@ -323,7 +344,7 @@
         else if (n.querySelectorAll) for (const i of n.querySelectorAll('img')) queueImg(i);
         schedulePrintDialogScan();
         schedulePlaymats();
-        schedulePlaymatSettings();
+        scheduleCosmeticSettings();
       }
     }
   });
@@ -418,7 +439,7 @@
     if (!Number.isInteger(msg.i) || !Number.isInteger(msg.t) || msg.t < 1 || msg.t > 200 || !Array.isArray(msg.e)) return;
 
     const isNew = !remote.has(msg.c);
-    const p = remote.get(msg.c) || { player: null, arts: {}, foils: new Set(), playmat: null, rev: -1, pend: null };
+    const p = remote.get(msg.c) || { player: null, arts: {}, foils: new Set(), playmat: null, sleeve: null, rev: -1, pend: null };
     remote.set(msg.c, p);
     if (msg.r < p.rev || (msg.r === p.rev && !p.pend)) return;
     if (!p.pend || p.pend.r !== msg.r) p.pend = { r: msg.r, parts: new Map() };
@@ -428,11 +449,18 @@
       const arts = {};
       const foils = new Set();
       let playmat = null;
+      let sleeve = null;
       for (const part of p.pend.parts.values()) {
         for (const e of part) {
           // The playmat travels as ["playmat", url, "playmat"]; older versions skip the key.
           if (Array.isArray(e) && e[0] === 'playmat') {
             if (validRemoteUrl(e[1])) playmat = e[1];
+            continue;
+          }
+          // The sleeve as ["sleeve", url, "sleeve"] or ["sleeve", "#rrggbb", "matte"].
+          if (Array.isArray(e) && e[0] === 'sleeve') {
+            if (e[2] === 'matte' && validColor(e[1])) sleeve = { c: e[1].toLowerCase() };
+            else if (e[2] === 'sleeve' && validRemoteUrl(e[1])) sleeve = { u: e[1] };
             continue;
           }
           // Foils travel as ["foil:<name>", "", "foil"]; older versions skip them (no URL).
@@ -448,6 +476,7 @@
       p.arts = arts;
       p.foils = foils;
       p.playmat = playmat;
+      p.sleeve = sleeve;
       p.rev = msg.r;
       p.pend = null;
       p.player = typeof msg.p === 'string' && msg.p.length <= 100 ? msg.p : null;
@@ -519,6 +548,12 @@
     if (mat) {
       const u = mat.startsWith('data:') ? (settings.uploadLocal && hostedUrl(mat)) : mat;
       if (validRemoteUrl(u)) entries.push(['playmat', u, 'playmat']);
+    }
+    const sleeve = ownSleeve();
+    if (sleeve && sleeve.c) entries.push(['sleeve', sleeve.c, 'matte']);
+    else if (sleeve) {
+      const u = sleeve.u.startsWith('data:') ? (settings.uploadLocal && hostedUrl(sleeve.u)) : directImageUrl(sleeve.u);
+      if (validRemoteUrl(u)) entries.push(['sleeve', u, 'sleeve']);
     }
     const chunks = [[]];
     let size = 0;
@@ -1327,11 +1362,11 @@
     }
   }
 
-  let playmatSettingsQueued = false;
-  function schedulePlaymatSettings() {
-    if (playmatSettingsQueued) return;
-    playmatSettingsQueued = true;
-    setTimeout(() => { playmatSettingsQueued = false; scanPlaymatSettings(); }, 50);
+  let cosmeticSettingsQueued = false;
+  function scheduleCosmeticSettings() {
+    if (cosmeticSettingsQueued) return;
+    cosmeticSettingsQueued = true;
+    setTimeout(() => { cosmeticSettingsQueued = false; scanCosmeticSettings(); }, 50);
   }
 
   let playmatsQueued = false;
@@ -1341,20 +1376,181 @@
     requestAnimationFrame(() => { playmatsQueued = false; applyPlaymats(); });
   }
 
-  // ---------- "Custom" tab in edhplay's Settings > Playmats ----------
+  // ---------- custom sleeves on card backs ----------
 
-  // The Playmats panel has filter tabs (All / Free / Patreon, role="tab" with data-value) above a
-  // grid of tiles. A cloned "Custom" tab swaps that grid for ours. Picking a custom playmat only
-  // takes effect with edhplay's own Save Preferences; Close throws it away.
+  // edhplay draws every card back (library, hands, face-down cards) as .card-frame > div > img with
+  // the sleeve image (274x384, object-fit: cover). page-owner.js tags those images with the player
+  // they belong to (data-ea-sleeve-owner). A sleeve is an image (u) or a matte color (c); matte
+  // sleeves travel as just the color and every browser paints the texture itself.
+  const SLEEVE_W = 548, SLEEVE_H = 768; // twice edhplay's sleeve images
+  const matteImages = new Map(); // color -> data URL
+  let matteLayer = null; // { canvas, url }: everything but the color, painted once
+
+  // The matte look as a transparent layer over the color: grain (seeded, so it's the same
+  // everywhere), soft light from the top left, shade toward the bottom right and a darker rim.
+  // The form previews it over a CSS background color, so picking a color costs nothing.
+  function matteOverlay() {
+    if (matteLayer) return matteLayer;
+    const c = document.createElement('canvas');
+    c.width = SLEEVE_W;
+    c.height = SLEEVE_H;
+    const g = c.getContext('2d');
+    const px = g.createImageData(SLEEVE_W, SLEEVE_H);
+    let seed = 0x2f6b9a1d;
+    const rand = () => {
+      seed = (seed + 0x6d2b79f5) | 0;
+      let x = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      x = (x + Math.imul(x ^ (x >>> 7), 61 | x)) ^ x;
+      return ((x ^ (x >>> 14)) >>> 0) / 4294967296;
+    };
+    for (let i = 0; i < px.data.length; i += 4) {
+      const n = rand() - 0.5;
+      const v = n > 0 ? 255 : 0;
+      px.data[i] = px.data[i + 1] = px.data[i + 2] = v;
+      px.data[i + 3] = Math.abs(n) * 32;
+    }
+    g.putImageData(px, 0, 0);
+    const light = g.createLinearGradient(0, 0, SLEEVE_W, SLEEVE_H);
+    light.addColorStop(0, 'rgba(255,255,255,.12)');
+    light.addColorStop(0.5, 'rgba(255,255,255,0)');
+    light.addColorStop(1, 'rgba(0,0,0,.18)');
+    g.fillStyle = light;
+    g.fillRect(0, 0, SLEEVE_W, SLEEVE_H);
+    const rim = g.createRadialGradient(SLEEVE_W / 2, SLEEVE_H / 2, SLEEVE_H * 0.32, SLEEVE_W / 2, SLEEVE_H / 2, SLEEVE_H * 0.72);
+    rim.addColorStop(0, 'rgba(0,0,0,0)');
+    rim.addColorStop(1, 'rgba(0,0,0,.25)');
+    g.fillStyle = rim;
+    g.fillRect(0, 0, SLEEVE_W, SLEEVE_H);
+    matteLayer = { canvas: c, url: c.toDataURL('image/png') };
+    return matteLayer;
+  }
+
+  function matteSleeve(color) {
+    if (matteImages.has(color)) return matteImages.get(color);
+    const c = document.createElement('canvas');
+    c.width = SLEEVE_W;
+    c.height = SLEEVE_H;
+    const g = c.getContext('2d');
+    g.fillStyle = color;
+    g.fillRect(0, 0, SLEEVE_W, SLEEVE_H);
+    g.drawImage(matteOverlay().canvas, 0, 0);
+    const url = c.toDataURL('image/webp', 0.9);
+    matteImages.set(color, url);
+    return url;
+  }
+
+  const validColor = (c) => typeof c === 'string' && /^#[0-9a-f]{6}$/i.test(c);
+  const sleeveImage = (s) => (s.c ? matteSleeve(s.c) : directImageUrl(s.u));
+
+  function ownSleeve() {
+    return (activeSleeve && sleeves.find(s => s.id === activeSleeve)) || null;
+  }
+
+  // Same ownership rules as arts and playmats.
+  function sleeveFor(playerId) {
+    const own = ownSleeve();
+    if (!currentRoom() || !playerId) return own;
+    const me = myPlayer();
+    if (playerId === me) return own;
+    const peer = peerFor(playerId);
+    if (peer) return peer.sleeve;
+    return me ? null : own;
+  }
+
+  // Card faces use .card-frame too, with more inside; a sleeve is exactly .card-frame > div > img.
+  // Face-down cards are drawn by the card face itself, with the player's sleeve image (or Magic's
+  // card back, backs.scryfall.io, for the Classic sleeve). Outside dialogs (Settings lists the
+  // same images as tiles) any of those images is a sleeve.
+  const BACKS_RX = /^https:\/\/backs\.scryfall\.io\//i;
+  const SITE_SLEEVE_RX = /^(?:https:\/\/(?:www\.)?edhplay\.com)?\/sleeves\//i;
+  function isFrameSleeve(img) {
+    const box = img.parentElement, frame = box && box.parentElement;
+    return !!frame && frame.classList.contains('card-frame') && frame.children.length === 1 && box.children.length === 1;
+  }
+
+  // edhplay's own image for this <img>: what we saved when we replaced it, else its src. The same
+  // element can switch from a card face to a sleeve (turned face down), so a saved value only
+  // counts while the src is still the replacement we put there.
+  function siteSrc(img) {
+    const src = img.getAttribute('src') || '';
+    if (img.dataset.eaSleeve && src === img.dataset.eaSleeve) return img.dataset.eaSleeveOrig || '';
+    if (img.dataset.eaSrc && src === img.dataset.eaSrc) return img.dataset.eaOrig || '';
+    return src;
+  }
+
+  function isSleeveImg(img) {
+    const src = siteSrc(img);
+    if (CARD_RX.test(src)) return false;
+    if ((BACKS_RX.test(src) || SITE_SLEEVE_RX.test(src)) && !img.closest('[role="dialog"]')) return true;
+    return isFrameSleeve(img);
+  }
+
+  function processSleeve(img) {
+    const src = img.getAttribute('src') || '';
+    if (!(img.dataset.eaSleeve && src === img.dataset.eaSleeve)) {
+      img.dataset.eaSleeveOrig = src;
+      delete img.dataset.eaSleeve;
+    }
+    const sleeve = sleeveFor(img.dataset.eaSleeveOwner || null);
+    if (!sleeve) {
+      if (img.dataset.eaSleeve) {
+        delete img.dataset.eaSleeve;
+        img.src = img.dataset.eaSleeveOrig;
+      }
+      return;
+    }
+    const url = sleeveImage(sleeve);
+    img.dataset.eaSleeve = url;
+    if (src !== url) img.src = url;
+    // A cropped image sleeve is a local file: share it through litterbox like local arts.
+    if (sleeve === ownSleeve() && url.startsWith('data:') && !sleeve.c && sync) {
+      wanted.add(url);
+      shareLocalArts();
+    }
+  }
+
+  // ---------- "Custom" tabs in edhplay's Settings > Card Sleeves and Playmats ----------
+
+  // Both panels have filter tabs (All / Free / Patreon, role="tab" with data-value) above a grid
+  // of tiles; the panel's id says which one it is. A cloned "Custom" tab swaps that grid for ours.
+  // A custom pick only takes effect with edhplay's own Save Preferences; Close throws it away.
 
   const CHECK_SVG = '<svg viewBox="0 0 512 512" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M256 48C141.31 48 48 141.31 48 256s93.31 208 208 208 208-93.31 208-208S370.69 48 256 48zm108.25 138.29-134.4 160a16 16 0 0 1-12 5.71h-.27a16 16 0 0 1-11.89-5.3l-57.6-64a16 16 0 1 1 23.78-21.4l45.29 50.32 122.59-145.91a16 16 0 0 1 24.5 20.58z"/></svg>';
 
-  // Tiles copy edhplay's playmat tiles: 16:9, 12px corners, name on hover, cyan inset when selected.
+  const COSMETICS = {
+    playmat: {
+      panel: 'playmats',
+      items: () => playmats,
+      setItems: (list) => { playmats = list; return { playmats: list }; },
+      active: () => activePlaymat,
+      store: (id) => ({ playmat: id }),
+      image: (mat) => directImageUrl(mat.u),
+      note: 'pm_note',
+      addTitle: 'pm_addTitle',
+      openForm: (mount, onSaved) => openPlaymatForm(mount, onSaved),
+      // The playmat being picked is previewed on your board.
+      preview: (id) => { previewPlaymat = id; schedulePlaymats(); },
+    },
+    sleeve: {
+      panel: 'sleeves',
+      items: () => sleeves,
+      setItems: (list) => { sleeves = list; return { sleeves: list }; },
+      active: () => activeSleeve,
+      store: (id) => ({ sleeve: id }),
+      image: sleeveImage,
+      note: 'sl_note',
+      addTitle: 'sl_addTitle',
+      openForm: (mount, onSaved) => openSleeveForm(mount, onSaved),
+      preview: () => {},
+    },
+  };
+
+  // Tiles copy edhplay's: 12px corners, name on hover, cyan inset when selected.
   const PLAYMAT_CSS = EDH_BASE_CSS + `
     :host { display: block; }
     .note { color: #a1a1aa; font-size: 12px; margin: 0 0 10px; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
-    .tile { position: relative; overflow: hidden; border-radius: 12px; background: rgba(255,255,255,.04); cursor: pointer; aspect-ratio: 16/9; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--tile-min, 180px), 1fr)); gap: 12px; }
+    .tile { position: relative; overflow: hidden; border-radius: 12px; background: rgba(255,255,255,.04); cursor: pointer; aspect-ratio: var(--tile-aspect, 16/9); }
     .tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
     .tile .cap { position: absolute; left: 0; right: 0; bottom: 0; padding: 28px 8px 6px; font-size: 12px; font-weight: 500;
       color: #fafafa; background: linear-gradient(to top, rgba(0,0,0,.92), rgba(0,0,0,0)); opacity: 0; transition: opacity .18s;
@@ -1365,7 +1561,7 @@
     .tile .check { position: absolute; top: 4px; right: 4px; color: rgb(32,184,205); display: none; line-height: 0; }
     .tile.selected .sel, .tile.selected .check { display: block; }
     .tile.add { border: 1px dashed rgba(255,255,255,.12); display: flex; align-items: center; justify-content: center;
-      color: #a1a1aa; font-size: 13px; font-weight: 500; }
+      color: #a1a1aa; font-size: 13px; font-weight: 500; text-align: center; padding: 8px; }
     .tile.add:hover { border-color: #0891b2; color: #22d3ee; }
     .tile:focus-visible { outline: 2px solid #0891b2; outline-offset: 2px; }
     .act { position: absolute; top: 6px; width: 28px; height: 28px; padding: 0; border-radius: 9999px; justify-content: center;
@@ -1376,9 +1572,9 @@
     .ren { left: 38px; color: #d4d4d8; }
     .act:hover { background: #18181b; }
     .confirm { position: absolute; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center;
-      gap: 8px; background: rgba(24,24,27,.92); cursor: default; }
+      gap: 8px; background: rgba(24,24,27,.92); cursor: default; text-align: center; padding: 6px; }
     .confirm span { font-size: 13px; font-weight: 500; color: #fafafa; }
-    .confirm .row { display: flex; gap: 8px; }
+    .confirm .row { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
     .tile.asking .confirm { display: flex; }
     .tile.asking .act { display: none; }
     button.danger-solid { background: #dc2626; color: #fff; }
@@ -1386,60 +1582,92 @@
     input.rename { position: absolute; left: 8px; right: 8px; bottom: 8px; height: 28px; font-size: 12px; }
   `;
 
-  const playmatCtx = new WeakMap(); // Settings dialog -> { dlg, list, trigger, active, host, pending }
+  // A pick waits here until Save Preferences: dialog -> { playmat?, sleeve? } (an id, or null for
+  // edhplay's own). It outlives the panel, which edhplay rebuilds when switching tabs.
+  const pendingChoices = new Map();
+  const pendingOf = (dlg, kind) => (pendingChoices.get(dlg) || {})[kind];
+  function setPending(dlg, kind, value) {
+    const all = pendingChoices.get(dlg) || {};
+    if (value === undefined) delete all[kind]; else all[kind] = value;
+    if (Object.keys(all).length) pendingChoices.set(dlg, all); else pendingChoices.delete(dlg);
+    COSMETICS[kind].preview(value);
+  }
 
-  function scanPlaymatSettings() {
-    for (const dlg of document.querySelectorAll('[role="dialog"][data-state="open"]')) {
-      const free = dlg.querySelector('[role="tab"][data-value="free"]');
-      const list = free && free.closest('[role="tablist"]');
-      if (!list || !list.querySelector('[role="tab"][data-value="patreon"]') || list.querySelector('[data-ea-playmat-tab]')) continue;
-      injectPlaymatTab(dlg, list, free);
+  function kindOfList(dlg, list) {
+    const panel = list.closest('[role="tabpanel"]');
+    for (const [kind, c] of Object.entries(COSMETICS)) {
+      if (panel && panel.id.endsWith('content-' + c.panel)) return kind;
     }
-    // Settings closed without saving: drop the preview.
-    const tab = document.querySelector('[data-ea-playmat-tab]');
-    const open = tab && tab.closest('[role="dialog"]') && tab.closest('[role="dialog"]').getAttribute('data-state') === 'open';
-    if (previewPlaymat !== undefined && !open) {
-      previewPlaymat = undefined;
-      schedulePlaymats();
+    // No panel id to go by: use the dialog's selected section tab.
+    for (const [kind, c] of Object.entries(COSMETICS)) {
+      if (dlg.querySelector(`[role="tab"][data-value="${c.panel}"][aria-selected="true"]`)) return kind;
+    }
+    return null;
+  }
+
+  function scanCosmeticSettings() {
+    for (const dlg of document.querySelectorAll('[role="dialog"][data-state="open"]')) {
+      for (const free of dlg.querySelectorAll('[role="tab"][data-value="free"]')) {
+        const list = free.closest('[role="tablist"]');
+        if (!list || !list.querySelector('[role="tab"][data-value="patreon"]') || list.querySelector('[data-ea-custom-tab]')) continue;
+        const kind = kindOfList(dlg, list);
+        if (kind) injectCustomTab(dlg, list, free, kind);
+      }
+    }
+    // Settings closed without saving: drop its picks (and the playmat preview).
+    for (const dlg of [...pendingChoices.keys()]) {
+      if (dlg.isConnected && dlg.getAttribute('data-state') === 'open') continue;
+      for (const kind of Object.keys(pendingChoices.get(dlg))) setPending(dlg, kind, undefined);
     }
   }
 
-  function injectPlaymatTab(dlg, list, template) {
+  function injectCustomTab(dlg, list, template, kind) {
+    const c = COSMETICS[kind];
     const trigger = template.cloneNode(true);
-    trigger.dataset.eaPlaymatTab = '1';
+    trigger.dataset.eaCustomTab = kind;
     trigger.dataset.value = 'edhproxy-custom';
-    trigger.id = 'edhproxy-playmat-tab';
+    trigger.id = 'edhproxy-' + kind + '-tab';
     trigger.removeAttribute('data-selected');
     trigger.removeAttribute('data-focus');
     trigger.setAttribute('aria-selected', 'false');
     trigger.tabIndex = -1;
     list.insertBefore(trigger, list.querySelector('[data-part="indicator"]'));
 
-    const ctx = { dlg, list, trigger, active: false, host: null, pending: undefined };
-    ctx.setLabel = () => { trigger.textContent = `${t('custom')} (${playmats.length})`; };
+    const ctx = { kind, dlg, list, trigger, active: false, host: null };
+    ctx.pending = () => pendingOf(dlg, kind);
+    ctx.setLabel = () => { trigger.textContent = `${t('custom')} (${c.items().length})`; };
     ctx.grid = () => list.closest('[data-part="root"]').nextElementSibling;
     ctx.setLabel();
-    playmatCtx.set(dlg, ctx);
 
     // Keep edhplay's tabs machinery out of it; we drive this tab ourselves.
     for (const type of ['pointerdown', 'mousedown', 'keydown', 'focus']) trigger.addEventListener(type, (e) => e.stopPropagation());
     trigger.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
-      showCustomPlaymats(ctx, true);
+      showCustomTab(ctx, true);
     });
     // Any of edhplay's own filters takes the view back.
     list.addEventListener('click', (e) => {
       const tab = e.target.closest('[role="tab"]');
-      if (tab && tab !== trigger) showCustomPlaymats(ctx, false);
-    }, true);
-    // Picking one of edhplay's playmats replaces the custom one.
-    ctx.grid().addEventListener('click', (e) => {
-      if (e.target.closest('.group') && (activePlaymat || ctx.pending)) choosePlaymat(ctx, null);
+      if (tab && tab !== trigger) showCustomTab(ctx, false);
     }, true);
   }
 
-  function showCustomPlaymats(ctx, on) {
+  // Picking one of edhplay's tiles replaces the custom one. Listened for on the window: edhplay
+  // rebuilds the grid when switching All / Free / Patreon, which would drop a listener on it.
+  window.addEventListener('click', (e) => {
+    const tile = e.target.closest && e.target.closest('.group');
+    const dlg = tile && tile.closest('[role="dialog"]');
+    const list = dlg && tile.closest('[role="tabpanel"]') && tile.closest('[role="tabpanel"]').querySelector('[role="tablist"]');
+    const kind = list && kindOfList(dlg, list);
+    if (!kind) return;
+    if (COSMETICS[kind].active() || pendingOf(dlg, kind)) {
+      setPending(dlg, kind, COSMETICS[kind].active() ? null : undefined);
+      refreshCustomViews();
+    }
+  }, true);
+
+  function showCustomTab(ctx, on) {
     if (on === ctx.active) return;
     ctx.active = on;
     const grid = ctx.grid();
@@ -1464,7 +1692,7 @@
       }
       if (indicator) indicator.style.setProperty('opacity', '0', 'important');
       grid.style.setProperty('display', 'none', 'important');
-      ctx.host = renderPlaymatPanel(ctx);
+      ctx.host = renderCustomPanel(ctx);
       grid.after(ctx.host);
       refreshCustomViews();
     } else {
@@ -1480,17 +1708,39 @@
     }
   }
 
-  // id = a custom playmat, null = back to edhplay's. Choosing what is already in use is no change.
-  function choosePlaymat(ctx, id) {
-    ctx.pending = id === activePlaymat ? undefined : id;
-    previewPlaymat = ctx.pending;
-    schedulePlaymats();
+  // id = a custom item, null = back to edhplay's. Choosing what is already in use is no change.
+  function chooseCustom(ctx, id) {
+    setPending(ctx.dlg, ctx.kind, id === COSMETICS[ctx.kind].active() ? undefined : id);
     refreshCustomViews();
+    const sleeve = ctx.kind === 'sleeve' && id && sleeves.find(s => s.id === id);
+    if (sleeve) playSleevePreview(sleeveImage(sleeve));
   }
 
-  function renderPlaymatPanel(ctx) {
+  // edhplay's own sleeve preview: a big card flipping over at the side of the screen, styled by
+  // its global sleeve-preview-* classes (loaded with the Settings dialog).
+  const SLEEVE_PREVIEW_FRONT = 'https://cards.scryfall.io/normal/front/4/a/4a1f905f-1d55-4d02-9d24-e58070793d3f.jpg?1717951088';
+  const SLEEVE_PREVIEW_MS = 2800;
+  function playSleevePreview(back) {
+    for (const old of document.querySelectorAll('[data-ea-sleeve-preview]')) old.remove();
+    const container = document.createElement('div');
+    container.className = 'sleeve-preview-container';
+    container.dataset.eaSleevePreview = '1';
+    container.innerHTML = `<div class="sleeve-preview-perspective standard" style="--animation-duration: ${SLEEVE_PREVIEW_MS}ms">
+      <div class="sleeve-preview-card"><div class="sleeve-card-face sleeve-card-front"></div><div class="sleeve-card-face sleeve-card-back"></div></div></div>`;
+    container.querySelector('.sleeve-card-front').style.backgroundImage = `url("${SLEEVE_PREVIEW_FRONT}")`;
+    container.querySelector('.sleeve-card-back').style.backgroundImage = `url("${back}")`;
+    document.body.append(container);
+    setTimeout(() => container.remove(), SLEEVE_PREVIEW_MS + 100);
+  }
+
+  function renderCustomPanel(ctx) {
+    const c = COSMETICS[ctx.kind];
     const host = document.createElement('div');
-    host.dataset.eaPlaymatPanel = '1';
+    host.dataset.eaCustomPanel = ctx.kind;
+    if (ctx.kind === 'sleeve') {
+      host.style.setProperty('--tile-min', '110px');
+      host.style.setProperty('--tile-aspect', '274/384');
+    }
     const root = host.attachShadow({ mode: 'open' });
     root.innerHTML = `<style>${PLAYMAT_CSS}</style><p class="note"></p><div class="grid"></div><div class="form"></div>`;
     for (const type of ['keydown', 'keyup', 'keypress']) root.addEventListener(type, (e) => e.stopPropagation());
@@ -1500,18 +1750,19 @@
       host,
       render() {
         const pair = footerPairs(ctx.dlg)[0];
-        root.querySelector('.note').textContent = t('pm_note', { save: (pair && pair.confirm.textContent.trim()) || 'Save' });
+        root.querySelector('.note').textContent = t(c.note, { save: (pair && pair.confirm.textContent.trim()) || 'Save' });
         ctx.setLabel();
-        const current = ctx.pending !== undefined ? ctx.pending : activePlaymat;
+        const pending = ctx.pending();
+        const current = pending !== undefined ? pending : c.active();
         gridEl.textContent = '';
-        for (const mat of playmats) gridEl.append(playmatTile(ctx, mat, current === mat.id));
+        for (const item of c.items()) gridEl.append(customTile(ctx, item, current === item.id));
         const add = document.createElement('div');
         add.className = 'tile add';
         add.tabIndex = 0;
         add.setAttribute('role', 'button');
-        add.title = t('pm_addTitle');
+        add.title = t(c.addTitle);
         add.textContent = '+ ' + t('add');
-        add.onclick = () => openPlaymatForm(root.querySelector('.form'), (mat) => choosePlaymat(ctx, mat.id));
+        add.onclick = () => c.openForm(root.querySelector('.form'), (item) => chooseCustom(ctx, item.id));
         add.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); add.onclick(); } };
         gridEl.append(add);
       },
@@ -1521,7 +1772,8 @@
     return host;
   }
 
-  function playmatTile(ctx, mat, selected) {
+  function customTile(ctx, item, selected) {
+    const c = COSMETICS[ctx.kind];
     const tile = document.createElement('div');
     tile.className = 'tile' + (selected ? ' selected' : '');
     tile.tabIndex = 0;
@@ -1529,14 +1781,14 @@
     const img = document.createElement('img');
     img.alt = '';
     img.referrerPolicy = 'no-referrer';
-    img.src = directImageUrl(mat.u);
+    img.src = c.image(item);
     const cap = document.createElement('div');
     cap.className = 'cap';
-    cap.textContent = mat.n || t('unnamed');
-    tile.title = mat.n || '';
+    cap.textContent = item.n || t('unnamed');
+    tile.title = item.n || '';
     tile.append(img, cap);
     tile.insertAdjacentHTML('beforeend', `<div class="sel"></div><div class="check">${CHECK_SVG}</div>`);
-    tile.onclick = () => choosePlaymat(ctx, mat.id);
+    tile.onclick = () => chooseCustom(ctx, item.id);
     tile.onkeydown = (e) => { if (e.target === tile && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); tile.onclick(); } };
 
     const del = document.createElement('button');
@@ -1552,7 +1804,7 @@
     ask.querySelector('.no').textContent = t('cancel');
     ask.onclick = (e) => e.stopPropagation();
     ask.onkeydown = (e) => e.stopPropagation();
-    ask.querySelector('.yes').onclick = () => deletePlaymat(ctx, mat.id);
+    ask.querySelector('.yes').onclick = () => deleteCustom(ctx, item.id);
     ask.querySelector('.no').onclick = () => tile.classList.remove('asking');
     del.onclick = (e) => { e.stopPropagation(); tile.classList.add('asking'); ask.querySelector('.no').focus(); };
 
@@ -1568,7 +1820,7 @@
       input.className = 'rename';
       input.maxLength = 40;
       input.placeholder = t('renamePlaceholder');
-      input.value = mat.n || '';
+      input.value = item.n || '';
       input.onclick = (ev) => ev.stopPropagation();
       tile.append(input);
       input.focus();
@@ -1580,8 +1832,7 @@
         input.remove();
         if (!save) return;
         const n = input.value.trim().slice(0, 40);
-        playmats = playmats.map(p => (p.id === mat.id ? { ...p, n: n || undefined } : p));
-        await chrome.storage.local.set({ playmats });
+        await chrome.storage.local.set(c.setItems(c.items().map(x => (x.id === item.id ? { ...x, n: n || undefined } : x))));
       };
       input.onkeydown = (ev) => {
         if (ev.key === 'Enter') { ev.preventDefault(); finish(true); }
@@ -1593,11 +1844,11 @@
     return tile;
   }
 
-  async function deletePlaymat(ctx, id) {
-    playmats = playmats.filter(p => p.id !== id);
-    if (ctx.pending === id) { ctx.pending = undefined; previewPlaymat = undefined; }
-    const changes = { playmats };
-    if (activePlaymat === id) changes.playmat = null;
+  async function deleteCustom(ctx, id) {
+    const c = COSMETICS[ctx.kind];
+    const changes = c.setItems(c.items().filter(x => x.id !== id));
+    if (ctx.pending() === id) setPending(ctx.dlg, ctx.kind, undefined);
+    if (c.active() === id) Object.assign(changes, c.store(null));
     await chrome.storage.local.set(changes);
   }
 
@@ -1669,9 +1920,8 @@
       const mat = { id: crypto.randomUUID(), u, t: Date.now() };
       const n = nameInput.value.trim();
       if (n) mat.n = n;
-      playmats = [mat, ...playmats];
       try {
-        await chrome.storage.local.set({ playmats });
+        await chrome.storage.local.set(COSMETICS.playmat.setItems([mat, ...playmats]));
       } catch (e) {
         warn.textContent = t('errSave', { msg: e.message });
         return;
@@ -1682,16 +1932,253 @@
     nameInput.focus();
   }
 
-  // Save Preferences commits the custom choice; edhplay saves its own settings as usual.
+  // New sleeve: a Custom Matte (pick a color) or an image framed in the sleeve's shape. Images
+  // are cropped here (drag to move, zoom with the slider or the wheel), the same way an avatar
+  // is cropped on Discord, and saved at twice edhplay's sleeve size.
+  const SLEEVE_FORM_CSS = FORM_CSS + `
+    .modes { display: flex; gap: 4px; padding: 3px; border-radius: 8px; background: rgba(255,255,255,.04); align-self: flex-start; }
+    .modes button { height: 30px; font-size: 13px; padding: 0 12px; }
+    .modes button[aria-pressed="true"] { background: rgba(255,255,255,.1); color: #fafafa; }
+    .crop { position: relative; width: 196px; aspect-ratio: 274/384; overflow: hidden; border-radius: 4.4% / 3.15%;
+      background: rgba(255,255,255,.04); touch-action: none; cursor: grab; user-select: none; flex: none;
+      box-shadow: 0 0 0 2px #52525b; }
+    .crop.dragging { cursor: grabbing; }
+    .crop.blank { box-shadow: none; border: 1px dashed rgba(255,255,255,.12); cursor: default; }
+    .crop img { position: absolute; left: 0; top: 0; max-width: none; transform-origin: 0 0; pointer-events: none; }
+    .crop .empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center;
+      padding: 12px; color: #71717a; font-size: 12px; }
+    .side { display: flex; flex-direction: column; gap: 8px; align-items: center; }
+    .side .hint { text-align: center; max-width: 196px; }
+    input[type=range] { width: 196px; accent-color: #0891b2; }
+    input[type=color] { width: 56px; height: 36px; padding: 2px; border-radius: 6px; border: 1px solid rgba(255,255,255,.06);
+      background: rgba(255,255,255,.04); cursor: pointer; }
+    .colors { display: flex; align-items: center; gap: 10px; }
+    [hidden] { display: none !important; }
+  `;
+
+  function openSleeveForm(mount, onSaved) {
+    if (mount.firstChild) return;
+    const host = document.createElement('div');
+    const root = host.attachShadow({ mode: 'open' });
+    root.innerHTML = `
+      <style>${SLEEVE_FORM_CSS}</style>
+      <div class="box" role="group" aria-label="${t('sl_formTitle')}">
+        <div class="header"><h2>${t('sl_formTitle')}</h2><div class="sub">${t('sl_formSub')}</div></div>
+        <div class="body"><div class="row">
+          <div class="side">
+            <div class="crop"><img alt=""><div class="empty">${t('sl_pick')}</div></div>
+            <input type="range" class="zoom" min="1" max="4" step="0.01" value="1" aria-label="${t('sl_zoom')}" hidden>
+            <span class="hint drag" hidden>${t('sl_drag')}</span>
+          </div>
+          <div class="form">
+            <div class="modes" role="group">
+              <button type="button" class="mode" data-mode="matte" aria-pressed="true">${t('sl_matte')}</button>
+              <button type="button" class="mode" data-mode="image" aria-pressed="false">${t('sl_image')}</button>
+            </div>
+            <label class="field">${t('nameLabel')} <span class="hint">${t('nameHint')}</span>
+              <input type="text" class="name" maxlength="40" spellcheck="false"></label>
+            <div class="field matte-only">${t('sl_color')}
+              <div class="colors"><input type="color" class="color" value="#1e3a8a"><span class="hint hex"></span></div></div>
+            <label class="field image-only" hidden>${t('urlLabel')} <span class="hint">${t('urlHint')}</span>
+              <input type="text" class="url" placeholder="https://i.imgur.com/....png" spellcheck="false"></label>
+            <label class="field image-only" hidden>${t('fileLabel')}<input type="file" class="file" accept="image/*"></label>
+            <div class="warn"></div>
+          </div>
+        </div></div>
+        <div class="footer"><button class="cancel">${t('cancel')}</button><button class="primary save">${t('save')}</button></div>
+      </div>`;
+    mount.appendChild(host);
+    const $ = (sel) => root.querySelector(sel);
+    const nameInput = $('.name'), urlInput = $('.url'), fileInput = $('.file'), warn = $('.warn');
+    const colorInput = $('.color'), crop = $('.crop'), cropImg = $('.crop img'), empty = $('.crop .empty'), zoom = $('.zoom');
+    const close = () => host.remove();
+    root.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.preventDefault(); close(); } });
+    for (const type of ['keydown', 'keyup', 'keypress']) root.addEventListener(type, (e) => e.stopPropagation());
+    $('.cancel').onclick = close;
+
+    let mode = 'matte';
+    // The picture being framed: a data URL (pixels we may read) and its size.
+    let pic = null; // { src, w, h }
+    let view = { scale: 1, x: 0, y: 0 }; // image px -> crop box px: box = img * scale + (x, y)
+    let loadSeq = 0;
+
+    const box = () => crop.getBoundingClientRect();
+    const minScale = () => Math.max(box().width / pic.w, box().height / pic.h);
+    function clamp() {
+      const b = box();
+      view.x = Math.min(0, Math.max(b.width - pic.w * view.scale, view.x));
+      view.y = Math.min(0, Math.max(b.height - pic.h * view.scale, view.y));
+    }
+    function draw() {
+      if (mode === 'matte') {
+        // The texture layer over a background color: dragging the color picker repaints nothing.
+        crop.style.backgroundColor = colorInput.value;
+        const layer = matteOverlay().url;
+        if (cropImg.getAttribute('src') !== layer) cropImg.src = layer;
+        Object.assign(cropImg.style, { width: '100%', height: '100%', transform: 'none' });
+        empty.hidden = true;
+        cropImg.hidden = false;
+        crop.classList.remove('blank');
+        return;
+      }
+      crop.style.backgroundColor = '';
+      empty.hidden = !!pic;
+      zoom.hidden = $('.drag').hidden = !pic;
+      // No picture yet: a dashed empty box like the Add tiles, not a broken image.
+      crop.classList.toggle('blank', !pic);
+      cropImg.hidden = !pic;
+      if (!pic) { cropImg.removeAttribute('src'); return; }
+      if (cropImg.getAttribute('src') !== pic.src) cropImg.src = pic.src;
+      Object.assign(cropImg.style, { width: pic.w + 'px', height: pic.h + 'px', transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})` });
+    }
+    // Zoom keeping the point under (cx, cy) of the crop box still.
+    function zoomTo(factor, cx, cy) {
+      const s = minScale() * factor;
+      const b = box();
+      if (cx === undefined) { cx = b.width / 2; cy = b.height / 2; }
+      view.x = cx - ((cx - view.x) / view.scale) * s;
+      view.y = cy - ((cy - view.y) / view.scale) * s;
+      view.scale = s;
+      clamp();
+      draw();
+    }
+
+    function setMode(m) {
+      mode = m;
+      for (const b of root.querySelectorAll('.mode')) b.setAttribute('aria-pressed', String(b.dataset.mode === m));
+      for (const el of root.querySelectorAll('.matte-only')) el.hidden = m !== 'matte';
+      for (const el of root.querySelectorAll('.image-only')) el.hidden = m !== 'image';
+      zoom.hidden = $('.drag').hidden = m !== 'image' || !pic;
+      crop.style.cursor = m === 'image' && pic ? '' : 'default';
+      warn.textContent = '';
+      draw();
+    }
+    for (const b of root.querySelectorAll('.mode')) b.onclick = () => setMode(b.dataset.mode);
+    const showHex = () => { $('.hex').textContent = colorInput.value.toUpperCase(); };
+    colorInput.addEventListener('input', () => { showHex(); draw(); });
+    showHex();
+
+    async function usePicture(src) {
+      const seq = ++loadSeq;
+      try {
+        const img = await loadImage(src);
+        if (seq !== loadSeq) return;
+        pic = { src, w: img.naturalWidth, h: img.naturalHeight };
+        view.scale = minScale();
+        const b = box();
+        view.x = (b.width - pic.w * view.scale) / 2;
+        view.y = (b.height - pic.h * view.scale) / 2;
+        zoom.value = '1';
+        crop.style.cursor = '';
+        draw();
+      } catch {
+        if (seq === loadSeq) warn.textContent = t('errLoad');
+      }
+    }
+
+    let typingTimer = null;
+    urlInput.addEventListener('input', () => {
+      fileInput.value = '';
+      clearTimeout(typingTimer);
+      typingTimer = setTimeout(async () => {
+        const typed = urlInput.value.trim();
+        const u = directImageUrl(typed);
+        warn.textContent = '';
+        if (!u) return;
+        if (!/^https:\/\//i.test(u)) { warn.textContent = t('errHttps'); return; }
+        // Fetched by the background as a data URL, so the crop can be saved from a canvas.
+        try {
+          const res = await send({ type: 'render', url: u, width: 1600, asData: true });
+          if (urlInput.value.trim() === typed) usePicture(res.url);
+        } catch {
+          if (urlInput.value.trim() === typed) warn.textContent = t(isDriveLink(typed) ? 'errDrive' : 'errLoad');
+        }
+      }, 400);
+    });
+    fileInput.addEventListener('change', async () => {
+      const f = fileInput.files[0];
+      if (!f) return;
+      urlInput.value = '';
+      warn.textContent = '';
+      if (!nameInput.value) nameInput.value = f.name.replace(/\.[^.]+$/, '').slice(0, 40);
+      usePicture(await shrinkFile(f, 1600));
+    });
+
+    zoom.addEventListener('input', () => { if (pic) zoomTo(Number(zoom.value)); });
+    crop.addEventListener('wheel', (e) => {
+      if (mode !== 'image' || !pic) return;
+      e.preventDefault();
+      const b = box();
+      const factor = Math.min(4, Math.max(1, Number(zoom.value) * (e.deltaY < 0 ? 1.1 : 1 / 1.1)));
+      zoom.value = String(factor);
+      zoomTo(factor, e.clientX - b.left, e.clientY - b.top);
+    }, { passive: false });
+    let drag = null;
+    crop.addEventListener('pointerdown', (e) => {
+      if (mode !== 'image' || !pic) return;
+      drag = { id: e.pointerId, x: e.clientX - view.x, y: e.clientY - view.y };
+      crop.setPointerCapture(e.pointerId);
+      crop.classList.add('dragging');
+    });
+    crop.addEventListener('pointermove', (e) => {
+      if (!drag || e.pointerId !== drag.id) return;
+      view.x = e.clientX - drag.x;
+      view.y = e.clientY - drag.y;
+      clamp();
+      draw();
+    });
+    const endDrag = () => { drag = null; crop.classList.remove('dragging'); };
+    crop.addEventListener('pointerup', endDrag);
+    crop.addEventListener('pointercancel', endDrag);
+
+    // The framed part of the picture at the sleeve's resolution.
+    async function cropped() {
+      const img = await loadImage(pic.src);
+      const b = box();
+      const c = document.createElement('canvas');
+      c.width = SLEEVE_W;
+      c.height = SLEEVE_H;
+      const g = c.getContext('2d');
+      g.imageSmoothingQuality = 'high';
+      g.drawImage(img, -view.x / view.scale, -view.y / view.scale, b.width / view.scale, b.height / view.scale, 0, 0, SLEEVE_W, SLEEVE_H);
+      return c.toDataURL('image/webp', 0.9);
+    }
+
+    $('.save').onclick = async () => {
+      const sleeve = { id: crypto.randomUUID(), t: Date.now() };
+      if (mode === 'matte') {
+        sleeve.c = colorInput.value.toLowerCase();
+      } else {
+        if (!pic) { warn.textContent = t('errMissing'); return; }
+        sleeve.u = await cropped();
+      }
+      const n = nameInput.value.trim() || (mode === 'matte' ? t('sl_matte') : '');
+      if (n) sleeve.n = n.slice(0, 40);
+      try {
+        await chrome.storage.local.set(COSMETICS.sleeve.setItems([sleeve, ...sleeves]));
+      } catch (e) {
+        warn.textContent = t('errSave', { msg: e.message });
+        return;
+      }
+      close();
+      onSaved(sleeve);
+    };
+    setMode('matte');
+    nameInput.focus();
+  }
+
+  // Save Preferences commits the custom picks; edhplay saves its own settings as usual.
   window.addEventListener('click', (e) => {
     const dlg = e.target.closest && e.target.closest('[role="dialog"]');
-    const ctx = dlg && playmatCtx.get(dlg);
-    if (!ctx || ctx.pending === undefined) return;
+    const picks = dlg && pendingChoices.get(dlg);
+    if (!picks) return;
     if (!footerPairs(dlg).some(p => p.confirm.contains(e.target))) return;
-    const choice = ctx.pending;
-    ctx.pending = undefined;
-    previewPlaymat = undefined;
-    chrome.storage.local.set({ playmat: choice });
+    const changes = {};
+    for (const [kind, id] of Object.entries(picks)) {
+      Object.assign(changes, COSMETICS[kind].store(id));
+      setPending(dlg, kind, undefined);
+    }
+    chrome.storage.local.set(changes);
   }, true);
 
   // ---------- foil toggle on deck pages: card menu item and the F key ----------
@@ -1824,6 +2311,13 @@
       refreshCustomViews();
       if (sync) publishSoon(800);
     }
+    if (changes.sleeves || changes.sleeve) {
+      if (changes.sleeves) sleeves = changes.sleeves.newValue || [];
+      if (changes.sleeve) activeSleeve = changes.sleeve.newValue || null;
+      scheduleScan();
+      refreshCustomViews();
+      if (sync) publishSoon(800);
+    }
     if (changes.settings) {
       const old = settings;
       settings = { ...DEFAULT_SETTINGS, ...(changes.settings.newValue || {}) };
@@ -1864,12 +2358,14 @@
   });
 
   async function init() {
-    const data = await chrome.storage.local.get(['settings', 'arts', 'library', 'foils', 'deckArts', 'deckFoils', 'playmats', 'playmat', 'nameCache', 'clientId', 'hintCustomShown']);
+    const data = await chrome.storage.local.get(['settings', 'arts', 'library', 'foils', 'deckArts', 'deckFoils', 'playmats', 'playmat', 'sleeves', 'sleeve', 'nameCache', 'clientId', 'hintCustomShown']);
     ownFoils = data.foils || {};
     deckArts = data.deckArts || {};
     deckFoils = data.deckFoils || {};
     playmats = data.playmats || [];
     activePlaymat = data.playmat || null;
+    sleeves = data.sleeves || [];
+    activeSleeve = data.sleeve || null;
     settings = { ...DEFAULT_SETTINGS, ...(data.settings || {}) };
     ownArts = data.arts || {};
     library = data.library || {};
@@ -1897,15 +2393,16 @@
     }
     observer.observe(document.documentElement, {
       subtree: true, childList: true, attributes: true,
-      attributeFilter: ['src', 'data-ea-owner', 'data-ea-local-player', 'data-ea-local-deck'],
+      attributeFilter: ['src', 'data-ea-owner', 'data-ea-sleeve-owner', 'data-ea-local-player', 'data-ea-local-deck'],
     });
     scanAll();
     scanPrintDialogs();
+    scanCosmeticSettings();
     applyPlaymats();
     checkRoom();
     setInterval(checkRoom, 1000);
     // Closing Settings removes nodes, which the observer above ignores; drop a stale preview here.
-    setInterval(() => { if (previewPlaymat !== undefined) scanPlaymatSettings(); }, 1000);
+    setInterval(() => { if (pendingChoices.size) scanCosmeticSettings(); }, 1000);
     setInterval(shareLocalArts, 5 * 60 * 1000);
     let lang = EA_I18N.pick(siteLang());
     chrome.storage.local.set({ siteLang: lang });

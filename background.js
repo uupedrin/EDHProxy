@@ -2,20 +2,66 @@
 
 importScripts('i18n.js');
 
-// Scryfall asks for <= 10 requests/s, so lookups are serialized with a small gap.
+// Card names by Scryfall id. A page full of cards asks for many at once, so ids are collected for
+// a moment and fetched 75 at a time (/cards/collection) instead of one request each; one card
+// per request took minutes on big pages, long enough for the browser to stop the service worker
+// with answers still pending. Batches go one after another with a small gap (Scryfall asks for
+// <= 10 requests/s).
+const COLLECTION_MAX = 75;
+const waitingCards = new Map(); // id -> [{ resolve, reject }]
+let cardTimer = null;
 let scryfallChain = Promise.resolve();
+
+const namesOf = (card) => (card.card_faces && !card.image_uris
+  ? [card.card_faces[0].name, card.card_faces[1].name]
+  : [card.name, card.name]);
+
 function cardInfo(id) {
-  const run = scryfallChain.then(async () => {
-    const res = await fetch(`https://api.scryfall.com/cards/${id}`, { headers: { Accept: 'application/json' } });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    const card = await res.json();
-    const faces = card.card_faces && !card.image_uris
-      ? [card.card_faces[0].name, card.card_faces[1].name]
-      : [card.name, card.name];
-    return { names: faces };
+  return new Promise((resolve, reject) => {
+    if (!waitingCards.has(id)) waitingCards.set(id, []);
+    waitingCards.get(id).push({ resolve, reject });
+    if (!cardTimer) cardTimer = setTimeout(flushCards, 50);
   });
-  scryfallChain = run.catch(() => {}).then(() => new Promise(r => setTimeout(r, 120)));
-  return run;
+}
+
+function flushCards() {
+  cardTimer = null;
+  const batch = [...waitingCards].slice(0, COLLECTION_MAX);
+  for (const [id] of batch) waitingCards.delete(id);
+  if (waitingCards.size) cardTimer = setTimeout(flushCards, 50);
+  scryfallChain = scryfallChain.then(async () => {
+    try {
+      const res = await fetch('https://api.scryfall.com/cards/collection', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ identifiers: batch.map(([id]) => ({ id })) }),
+        signal: AbortSignal.timeout(15000),
+      });
+      // One malformed id fails the whole batch (400): then ask for each card on its own.
+      if (res.status === 400 && batch.length > 1) {
+        for (const [id, waiters] of batch) {
+          await new Promise(r => setTimeout(r, 120));
+          try {
+            const one = await fetch(`https://api.scryfall.com/cards/${id}`, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(10000) });
+            if (!one.ok) throw new Error('HTTP ' + one.status);
+            const names = namesOf(await one.json());
+            for (const w of waiters) w.resolve({ names });
+          } catch (e) {
+            for (const w of waiters) w.reject(e);
+          }
+        }
+        return;
+      }
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const found = new Map(((await res.json()).data || []).map(card => [card.id, card]));
+      for (const [id, waiters] of batch) {
+        const card = found.get(id);
+        for (const w of waiters) card ? w.resolve({ names: namesOf(card) }) : w.reject(new Error('card not found'));
+      }
+    } catch (e) {
+      for (const [, waiters] of batch) for (const w of waiters) w.reject(e);
+    }
+  }).then(() => new Promise(r => setTimeout(r, 120)));
 }
 
 // Temporary public hosting for local files, so other players in the room can load them.
@@ -25,7 +71,7 @@ async function litterbox(dataUrl) {
   fd.append('reqtype', 'fileupload');
   fd.append('time', '1h');
   fd.append('fileToUpload', blob, 'card.' + ((blob.type.split('/')[1] || 'jpg').replace('jpeg', 'jpg')));
-  const res = await fetch('https://litterbox.catbox.moe/resources/internals/api.php', { method: 'POST', body: fd });
+  const res = await fetch('https://litterbox.catbox.moe/resources/internals/api.php', { method: 'POST', body: fd, signal: AbortSignal.timeout(60000) });
   const text = (await res.text()).trim();
   if (!res.ok || !/^https:\/\/\S+$/.test(text)) throw new Error(text || 'HTTP ' + res.status);
   return text;
@@ -53,7 +99,7 @@ function paintFoil(ctx, w, h) {
 // which can't skip the Referer like <img referrerpolicy> does, and hosts like Scryfall or imgur
 // refuse hotlinks from edhplay; a data URL sidesteps that.
 async function renderImage(url, width, foil, asData) {
-  const blob = await (await fetch(url, { credentials: 'omit' })).blob();
+  const blob = await (await fetch(url, { credentials: 'omit', signal: AbortSignal.timeout(20000) })).blob();
   const full = await createImageBitmap(blob);
   const shrink = width && full.width > width * 1.2;
   if (!shrink && !foil) {
@@ -84,7 +130,7 @@ function blobToDataUrl(blob) {
 }
 
 async function publish(url, body) {
-  const res = await fetch(url, { method: 'POST', body });
+  const res = await fetch(url, { method: 'POST', body, signal: AbortSignal.timeout(15000) });
   if (!res.ok) throw new Error('HTTP ' + res.status);
   return true;
 }
@@ -117,32 +163,35 @@ function isNewer(a, b) {
 async function showUpdateBadge(update) {
   const { siteLang } = await chrome.storage.local.get('siteLang');
   const lang = siteLang || chrome.i18n.getUILanguage();
-  chrome.action.setBadgeText({ text: update ? '↑' : '' });
-  chrome.action.setBadgeBackgroundColor({ color: '#0891b2' });
-  chrome.action.setBadgeTextColor({ color: '#ffffff' });
-  chrome.action.setTitle({
+  // Some Chromium browsers lack parts of chrome.action (setBadgeTextColor is Chrome 110+).
+  const call = (fn, arg) => { try { const p = fn && fn(arg); if (p && p.catch) p.catch(() => {}); } catch {} };
+  call(chrome.action.setBadgeText, { text: update ? '↑' : '' });
+  call(chrome.action.setBadgeBackgroundColor, { color: '#0891b2' });
+  call(chrome.action.setBadgeTextColor, { color: '#ffffff' });
+  call(chrome.action.setTitle, {
     title: update ? `${manifestName()} — ${EA_I18N.t(lang, 'updateAvailable', { version: update.version })}` : manifestName(),
   });
 }
 
 const manifestName = () => chrome.runtime.getManifest().name;
 
-// Returns 'available', 'latest' or 'error' (for the popup's "Check for updates").
+// Returns { result: 'available' | 'latest' | 'error', detail } (for the popup's "Check for updates").
 async function checkForUpdate() {
-  if (!/^[\w.-]+\/[\w.-]+$/.test(REPO)) return 'error';
+  if (!/^[\w.-]+\/[\w.-]+$/.test(REPO)) return { result: 'error', detail: 'no repository in manifest.json' };
+  let release;
   try {
-    const res = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, { headers: { Accept: 'application/vnd.github+json' } });
-    if (!res.ok) return 'error';
-    const release = await res.json();
-    const latest = String(release.tag_name || '').replace(/^v/, '');
-    const update = isNewer(latest, chrome.runtime.getManifest().version) ? { version: latest, url: release.html_url } : null;
-    await chrome.storage.local.set({ update });
-    await showUpdateBadge(update);
-    return update ? 'available' : 'latest';
-  } catch {
-    // Offline or rate-limited; the next check will try again.
-    return 'error';
+    const res = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, { headers: { Accept: 'application/vnd.github+json' }, signal: AbortSignal.timeout(15000) });
+    if (!res.ok) return { result: 'error', detail: `GitHub ${res.status}` };
+    release = await res.json();
+  } catch (e) {
+    // Offline or blocked; the next check will try again.
+    return { result: 'error', detail: String(e && e.message || e) };
   }
+  const latest = String(release.tag_name || '').replace(/^v/, '');
+  const update = isNewer(latest, chrome.runtime.getManifest().version) ? { version: latest, url: release.html_url } : null;
+  await chrome.storage.local.set({ update });
+  await showUpdateBadge(update).catch(() => {});
+  return { result: update ? 'available' : 'latest' };
 }
 
 // The badge doesn't survive a browser restart; put it back from the last check right away.
@@ -172,7 +221,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (msg.type === 'cardInfo') sendResponse({ ok: true, ...(await cardInfo(msg.id)) });
       else if (msg.type === 'publish') sendResponse({ ok: await publish(msg.url, msg.body) });
       else if (msg.type === 'litterbox') sendResponse({ ok: true, url: await litterbox(msg.dataUrl) });
-      else if (msg.type === 'checkUpdate') sendResponse({ ok: true, result: await checkForUpdate() });
+      else if (msg.type === 'checkUpdate') sendResponse({ ok: true, ...(await checkForUpdate()) });
       else if (msg.type === 'render') sendResponse({ ok: true, url: await renderImage(msg.url, msg.width, msg.foil, msg.asData) });
       else sendResponse({ ok: false, error: 'unknown message' });
     } catch (e) {

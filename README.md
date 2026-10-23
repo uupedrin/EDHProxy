@@ -24,6 +24,7 @@
 - **Shared in game.** Players in the same room who use EDHProxy see your arts on *your* cards, and you see theirs on *their* cards. Everyone else sees the normal cards.
 - **Local names.** Give each art a name to tell them apart. Names stay in your browser.
 - **Custom playmats.** Upload your own playmats in edhplay's Settings → Playmats → **Custom**; your opponents with EDHProxy see them too.
+- **Custom sleeves.** A **Custom Matte** sleeve in any color, or your own image cropped to the sleeve's shape, in Settings → Card Sleeves → **Custom**.
 - **Foil.** Mark any card as foil (custom art or not) from its menu or with the **F** key; it gets the same rainbow sheen Archidekt uses, and players in your room see it too.
 - **Follows the site's language.** English, Spanish, Italian, German, French, Portuguese, Japanese and Dutch — the same languages edhplay offers.
 - **One-click updates.** A badge on the toolbar icon tells you when there's a new version.
@@ -70,11 +71,20 @@ In the Custom panel:
 
 Choosing a different printing and confirming switches the card back to normal art. Arts are edited on deck pages only; in a game they are just shown.
 
-The popup (click the extension icon) shows whether you're in a room, who else has the extension, your arts, and lets you export/import them. Under **Extension** you can **Check for updates** right away or **Clear data** (deletes all your arts, foils and playmats; your settings stay).
+The popup (click the extension icon) shows whether you're in a room, who else has the extension, your arts, and lets you export/import them. Under **Extension** you can **Check for updates** right away or **Clear data** (deletes all your arts, foils, playmats and sleeves; your settings stay).
 
 ### Custom playmats
 
 Open edhplay's **Settings → Playmats**. Next to All / Free / Patreon there's a **Custom** tab with the playmats you uploaded. Click **+ Add** to upload one (image URL or a file; wide 16:9 images work best), pick it and click **Save Preferences**. Choosing one of edhplay's playmats and saving switches back. During a game, players in your room with EDHProxy see your playmat on your side of the table.
+
+### Custom sleeves
+
+Open edhplay's **Settings → Card Sleeves** and the **Custom** tab, then **+ Add**:
+
+- **Custom Matte**: pick a color; EDHProxy paints a matte sleeve with it.
+- **Image**: paste an image URL or choose a file, then drag it and zoom (slider or mouse wheel) to frame it. The frame has the sleeve's proportions (274×384, like a card) and the picture is cropped to it, like an avatar on Discord.
+
+Pick one and click **Save Preferences**. Your sleeve shows on the backs of your cards (library, hands, face-down cards), and players in your room with EDHProxy see it too. Image sleeves are shared like local files (through litterbox, during the game); matte sleeves only send their color.
 
 ### Foil
 

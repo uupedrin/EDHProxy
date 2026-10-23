@@ -95,8 +95,8 @@ async function renderStatus() {
 }
 
 $('export').onclick = async () => {
-  const { library = {}, foils = {}, deckArts = {}, deckFoils = {}, playmats = [], playmat = null } = await chrome.storage.local.get(['library', 'foils', 'deckArts', 'deckFoils', 'playmats', 'playmat']);
-  const blob = new Blob([JSON.stringify({ version: 1, arts, library, foils, deckArts, deckFoils, playmats, playmat }, null, 2)], { type: 'application/json' });
+  const { library = {}, foils = {}, deckArts = {}, deckFoils = {}, playmats = [], playmat = null, sleeves = [], sleeve = null } = await chrome.storage.local.get(['library', 'foils', 'deckArts', 'deckFoils', 'playmats', 'playmat', 'sleeves', 'sleeve']);
+  const blob = new Blob([JSON.stringify({ version: 1, arts, library, foils, deckArts, deckFoils, playmats, playmat, sleeves, sleeve }, null, 2)], { type: 'application/json' });
   const a = el('a', { href: URL.createObjectURL(blob), download: 'edhproxy-arts.json' });
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
@@ -113,7 +113,7 @@ $('importFile').onchange = async () => {
     for (const [k, a] of Object.entries(incoming)) {
       if (/^(id:|name:)/.test(k) && a && validUrl(a.u)) arts[k] = a;
     }
-    const { library = {}, foils = {}, deckArts = {}, deckFoils = {}, playmats = [] } = await chrome.storage.local.get(['library', 'foils', 'deckArts', 'deckFoils', 'playmats']);
+    const { library = {}, foils = {}, deckArts = {}, deckFoils = {}, playmats = [], sleeves = [] } = await chrome.storage.local.get(['library', 'foils', 'deckArts', 'deckFoils', 'playmats', 'sleeves']);
     const isDeckId = (d) => /^[0-9a-f-]{36}$/i.test(d);
     for (const [deck, entries] of Object.entries(data.deckArts || {})) {
       if (!isDeckId(deck) || !entries || typeof entries !== 'object') continue;
@@ -130,6 +130,16 @@ $('importFile').onchange = async () => {
         playmats.push({ id: p.id, u: p.u, t: p.t || Date.now(), ...(typeof p.n === 'string' && p.n ? { n: p.n.slice(0, 40) } : {}) });
       }
     }
+    // Sleeves: a cropped image (u) or a matte color (c).
+    for (const sl of Array.isArray(data.sleeves) ? data.sleeves : []) {
+      if (!sl || typeof sl.id !== 'string' || sleeves.some(x => x.id === sl.id)) continue;
+      const entry = { id: sl.id, t: sl.t || Date.now() };
+      if (typeof sl.c === 'string' && /^#[0-9a-f]{6}$/i.test(sl.c)) entry.c = sl.c.toLowerCase();
+      else if (validUrl(sl.u)) entry.u = sl.u;
+      else continue;
+      if (typeof sl.n === 'string' && sl.n) entry.n = sl.n.slice(0, 40);
+      sleeves.push(entry);
+    }
     for (const [name, on] of Object.entries(data.foils || {})) if (on === true && name.length <= 200) foils[name.toLowerCase()] = true;
     for (const [name, list] of Object.entries(data.library || {})) {
       if (!Array.isArray(list)) continue;
@@ -143,7 +153,7 @@ $('importFile').onchange = async () => {
       }
       if (merged.length) library[name] = merged;
     }
-    await chrome.storage.local.set({ arts, library, foils, deckArts, deckFoils, playmats });
+    await chrome.storage.local.set({ arts, library, foils, deckArts, deckFoils, playmats, sleeves });
     renderArts();
   } catch (e) {
     alert(t('importError', { msg: e.message }));
@@ -165,22 +175,25 @@ $('checkUpdate').onclick = async () => {
   button.disabled = true;
   out.hidden = false;
   out.textContent = t('checking');
-  let result = 'error';
+  let result = 'error', detail = '';
   try {
-    result = (await chrome.runtime.sendMessage({ type: 'checkUpdate' })).result;
-  } catch {
+    const res = await chrome.runtime.sendMessage({ type: 'checkUpdate' });
+    result = res.result || 'error';
+    detail = res.detail || res.error || '';
+  } catch (e) {
     // The service worker didn't answer; report it as a failed check.
+    detail = String(e && e.message || e);
   }
   const { update } = await chrome.storage.local.get('update');
   showUpdate(result === 'available' ? update : null);
   out.textContent = result === 'available' ? t('updateAvailable', { version: update.version })
-    : result === 'latest' ? t('upToDate') : t('checkFailed');
+    : result === 'latest' ? t('upToDate') : t('checkFailed') + (detail ? ` (${detail})` : '');
   button.disabled = false;
 };
 
-// Everything the user made (arts, foils, playmats) and the card-name cache. Settings, the room
+// Everything the user made (arts, foils, playmats, sleeves) and the card-name cache. Settings, the room
 // id and the updater's folder stay.
-const USER_DATA = ['arts', 'library', 'foils', 'deckArts', 'deckFoils', 'playmats', 'playmat', 'nameCache', 'hintCustomShown'];
+const USER_DATA = ['arts', 'library', 'foils', 'deckArts', 'deckFoils', 'playmats', 'playmat', 'sleeves', 'sleeve', 'nameCache', 'hintCustomShown'];
 
 $('clearData').onclick = () => { $('clearConfirm').hidden = false; };
 $('clearCancel').onclick = () => { $('clearConfirm').hidden = true; };
