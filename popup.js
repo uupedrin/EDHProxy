@@ -32,34 +32,15 @@ async function saveSettings() {
   await chrome.storage.local.set({ settings });
 }
 
-function renderArts() {
-  const list = $('arts');
-  list.textContent = '';
-  const entries = Object.entries(arts).sort((a, b) => (a[1].label || '').localeCompare(b[1].label || ''));
-  $('count').textContent = entries.length ? `(${entries.length})` : '';
-  if (!entries.length) {
-    list.append(el('li', { className: 'empty', textContent: t('emptyArts') }));
-    return;
-  }
-  for (const [key, a] of entries) {
-    const scope = key.startsWith('name:') ? t('scopeName') : t('scopeId');
-    const local = a.u.startsWith('data:') ? t('localSuffix') : '';
-    const remove = el('button', { className: 'remove', textContent: '✕', title: t('remove') });
-    remove.onclick = async () => {
-      delete arts[key];
-      await chrome.storage.local.set({ arts });
-      renderArts();
-    };
-    list.append(el('li', {}, [
-      el('img', { src: a.u, alt: '' }),
-      el('div', { className: 'info' }, [
-        el('div', { className: 'label', textContent: a.label || key }),
-        el('div', { className: 'meta', textContent: `${scope}${local}` }),
-      ]),
-      remove,
-    ]));
-  }
+// How many arts were uploaded (the manager page lists them).
+async function renderArts() {
+  const { library = {} } = await chrome.storage.local.get('library');
+  const count = Object.values(library).reduce((n, list) => n + list.length, 0);
+  $('count').textContent = count ? `(${count})` : '';
+  $('artsNote').textContent = count ? t('mgr_popupNote') : t('emptyArts');
 }
+
+$('manage').onclick = () => chrome.tabs.create({ url: chrome.runtime.getURL('manager.html') });
 
 // What a player shares: "3 arts · 2 foils · playmat · sleeve".
 function shared(p) {

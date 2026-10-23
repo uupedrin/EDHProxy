@@ -397,7 +397,28 @@
     }
   }
 
+  // Deck names for the art manager (it only knows deck ids otherwise): read from a deck page's
+  // title and from the deck tiles on My Decks.
+  let deckNames = {};
+  let deckNamesTimer = null;
+  function rememberDeckNames() {
+    const seen = {};
+    const page = location.pathname.match(/^\/decks\/([0-9a-f-]{36})/i);
+    const title = page && document.querySelector('.chakra-editable__preview');
+    if (title && title.textContent.trim()) seen[page[1]] = title.textContent.trim();
+    for (const tile of document.querySelectorAll('[data-deck-id][role="button"]')) {
+      const name = tile.querySelector('.chakra-heading');
+      if (/^[0-9a-f-]{36}$/i.test(tile.dataset.deckId) && name && name.textContent.trim()) seen[tile.dataset.deckId] = name.textContent.trim();
+    }
+    const changed = Object.entries(seen).filter(([id, n]) => deckNames[id] !== n);
+    if (!changed.length) return;
+    for (const [id, n] of changed) deckNames[id] = n.slice(0, 80);
+    clearTimeout(deckNamesTimer);
+    deckNamesTimer = setTimeout(() => chrome.storage.local.set({ deckNames }), 1000);
+  }
+
   function scanAll() {
+    rememberDeckNames();
     applySleeveVars();
     for (const img of document.querySelectorAll('img')) processImg(img);
     // The deck we play may only be guessed once our cards show up: announce its arts then.
@@ -1520,7 +1541,8 @@
   }
 
   function applyPlaymats() {
-    applySleeveVars(); // runs on the same table changes
+    applySleeveVars(); // runs on the same page changes
+    rememberDeckNames();
     for (const board of document.querySelectorAll('[data-player-board-id]')) {
       const url = playmatUrlFor(board.dataset.playerBoardId);
       if (!url) {
@@ -2605,13 +2627,14 @@
   });
 
   async function init() {
-    const data = await chrome.storage.local.get(['settings', 'arts', 'library', 'foils', 'deckArts', 'deckFoils', 'playmats', 'playmat', 'sleeves', 'sleeve', 'nameCache', 'clientId', 'hintCustomShown', HOSTED_KEY]);
+    const data = await chrome.storage.local.get(['settings', 'arts', 'library', 'foils', 'deckArts', 'deckFoils', 'playmats', 'playmat', 'sleeves', 'sleeve', 'nameCache', 'clientId', 'hintCustomShown', 'deckNames', HOSTED_KEY]);
     ownFoils = data.foils || {};
     deckArts = data.deckArts || {};
     deckFoils = data.deckFoils || {};
     playmats = data.playmats || [];
     activePlaymat = data.playmat || null;
     sleeves = data.sleeves || [];
+    deckNames = data.deckNames || {};
     for (const [k, h] of Object.entries(data[HOSTED_KEY] || {})) {
       if (h && validRemoteUrl(h.url) && h.exp > Date.now()) hosted.set(k, h);
     }

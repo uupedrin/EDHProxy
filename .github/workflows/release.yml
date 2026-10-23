@@ -31,7 +31,7 @@ jobs:
           mkdir dist
           zip -r dist/edhproxy.zip \
             manifest.json background.js content.js page-owner.js i18n.js unzip.js \
-            popup.html popup.js popup.css update.html update.js icons
+            popup.html popup.js popup.css update.html update.js manager.html manager.js icons
 
       - uses: softprops/action-gh-release@v2
         with:

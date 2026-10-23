@@ -75,7 +75,7 @@ In the Custom panel:
 
 Choosing a different printing and confirming switches the card back to normal art. Arts are edited on deck pages only; in a game they are just shown.
 
-The popup (click the extension icon) shows whether you're in a room, who else has the extension, your arts, and lets you export/import them. Under **Extension** you can **Check for updates** right away or **Clear data** (deletes all your arts, foils, playmats and sleeves; your settings stay).
+The popup (click the extension icon) shows whether you're in a room and what each player with the extension shares, and lets you export/import your arts. **Manage arts** opens the manager, with three tabs. **Cards** is a grid of every card you uploaded arts for; click one to see its arts and the decks that use each (or "All decks"), and rename or delete them. **Playmats** and **Sleeves** list your custom ones, show which is in use, and let you rename or delete them. Search works on every tab. Deck names show up once you've opened My Decks or the deck with the extension on. Under **Extension** you can **Check for updates** right away or **Clear data** (deletes all your arts, foils, playmats and sleeves; your settings stay).
 
 ### Custom playmats
 

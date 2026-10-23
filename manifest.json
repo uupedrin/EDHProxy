@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "EDHProxy",
-  "version": "1.4.4",
+  "version": "1.5.0",
   "description": "Use your own card art (alters, proxies) on edhplay.com and share it with players in your room who also use EDHProxy.",
   "homepage_url": "https://github.com/__REPO__",
   "permissions": [
