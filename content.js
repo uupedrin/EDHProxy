@@ -261,21 +261,56 @@
   // card down to its art box.
   const SIZE_WIDTH = { small: 146, normal: 488, border_crop: 480, large: 672, png: 745, art_crop: 745 };
   const rendered = new Map(); // `${foil}|${width}|${url}` -> data URL, or null = use url as is
+  // The latest copy of each image at any width: shown (scaled by the browser) while the right
+  // width is being made, so a new spot (a hover preview) doesn't flash the plain image first.
+  const anyWidth = new Map(); // `${foil}|${image}` -> data URL
+  // Scryfall's sizes of one card are the same picture (except the art_crop, which is cut).
+  const sameImage = (url) => url.replace(/^(https:\/\/cards\.scryfall\.io\/)(?!art_crop\/)[a-z_]+\//, '$1*/');
 
   function renderedUrl(url, size, foil) {
     const width = SIZE_WIDTH[size] || 0;
     if (!width && !foil) return url;
     const key = `${foil ? 'foil' : 'plain'}|${width}|${url}`;
-    if (rendered.has(key)) return rendered.get(key) || url;
+    const similar = `${foil ? 'foil' : 'plain'}|${sameImage(url)}`;
+    if (rendered.has(key)) return rendered.get(key) || anyWidth.get(similar) || url;
     rendered.set(key, null);
     send({ type: 'render', url, width, foil })
       .then((res) => {
         if (!res.url) return;
         rendered.set(key, res.url);
+        anyWidth.set(similar, res.url);
         scheduleScan(); // every image showing this card picks up the rendered copy
       })
       .catch((e) => console.warn('[EDHProxy] render failed, using the image as is', url, e));
-    return url;
+    return anyWidth.get(similar) || url;
+  }
+
+  function hideUntilLoaded(img) {
+    if (img.dataset.eaLoading) return;
+    img.dataset.eaLoading = '1';
+    img.style.setProperty('visibility', 'hidden', 'important');
+    const done = () => {
+      img.removeEventListener('load', done);
+      img.removeEventListener('error', done);
+      img.style.removeProperty('visibility');
+      delete img.dataset.eaLoading;
+    };
+    img.addEventListener('load', done);
+    img.addEventListener('error', done);
+  }
+
+  // Hover previews show a card at Scryfall's "normal" size, both faces of a double-faced card,
+  // usually a size the table hasn't shown yet. Make those copies ahead of time so the preview
+  // gets its final image straight away (no plain image first, no swap to a sharper one).
+  function preparePreview(card, orig, owner, deck) {
+    const faces = nameCache[card.id] && nameCache[card.id][0] !== nameCache[card.id][1] ? ['front', 'back'] : [card.face];
+    for (const face of faces) {
+      const art = findArt(card.id, face, owner, deck);
+      const foil = findFoil(card.id, face, owner, deck);
+      if (!art && !foil) continue;
+      const plain = orig.replace(/^(https:\/\/cards\.scryfall\.io\/)[a-z_]+\/(front|back)\//i, `$1normal/${face}/`);
+      renderedUrl(art ? directImageUrl(art.u) : plain, 'normal', foil);
+    }
   }
 
   function processImg(img) {
@@ -321,7 +356,15 @@
       return;
     }
 
-    const url = renderedUrl(art ? directImageUrl(art.u) : orig, card.size, foil);
+    const base = art ? directImageUrl(art.u) : orig;
+    const url = renderedUrl(base, card.size, foil);
+    preparePreview(card, orig, owner, deck);
+    // Still showing the printing's own art while a custom one downloads: the browser keeps the
+    // old picture on screen meanwhile, so hide it. Copies we made (data: URLs) are ready at once
+    // and need no hiding, which would only blink the image.
+    if (art && src !== url && !url.startsWith('data:') && !(img.dataset.eaSrc && src === img.dataset.eaSrc)) {
+      hideUntilLoaded(img);
+    }
     img.dataset.eaSrc = url;
     img.removeAttribute('srcset');
     setArtCrop(img, !!art && card.size === 'art_crop');
@@ -408,6 +451,7 @@
     if (currentRoom() !== roomId || !settings.syncEnabled) return;
     stopSync();
     sync = s;
+    restoreRemote(roomId);
     publishSoon(0);
     streamLoop(s);
   }
@@ -514,6 +558,7 @@
       p.player = typeof msg.p === 'string' && msg.p.length <= 100 ? msg.p : null;
       scheduleScan();
       schedulePlaymats();
+      saveRemoteSoon();
     }
     // Someone new showed up: re-announce so they get our arts even if the cache expired.
     if (isNew) {
@@ -525,6 +570,54 @@
   function publishSoon(delay) {
     clearTimeout(publishTimer);
     publishTimer = setTimeout(publishAll, delay);
+  }
+
+  // What the others announced is kept in this tab's sessionStorage, so a reload shows their arts,
+  // foils, playmats and sleeves right away instead of after the channel history comes back in.
+  // It belongs to one room: another room starts from scratch.
+  const REMOTE_KEY = 'edhpa-remote';
+  let remoteSaveTimer = null;
+  function saveRemoteSoon() {
+    clearTimeout(remoteSaveTimer);
+    remoteSaveTimer = setTimeout(() => {
+      if (!sync) return;
+      const peers = [...remote].filter(([, p]) => p.rev >= 0).map(([c, p]) => [c, {
+        player: p.player, arts: p.arts, foils: [...p.foils], playmat: p.playmat, sleeve: p.sleeve, rev: p.rev,
+      }]);
+      try {
+        sessionStorage.setItem(REMOTE_KEY, JSON.stringify({ room: sync.roomId, peers }));
+      } catch {
+        // Storage full or blocked: the channel history still brings everything back.
+      }
+    }, 500);
+  }
+
+  function restoreRemote(roomId) {
+    let saved = null;
+    try {
+      saved = JSON.parse(sessionStorage.getItem(REMOTE_KEY) || 'null');
+      if (saved && saved.room !== roomId) {
+        sessionStorage.removeItem(REMOTE_KEY);
+        saved = null;
+      }
+    } catch {
+      return;
+    }
+    if (!saved || !Array.isArray(saved.peers)) return;
+    for (const [c, p] of saved.peers) {
+      if (typeof c !== 'string' || c === clientId || !p || typeof p !== 'object') continue;
+      remote.set(c, {
+        player: typeof p.player === 'string' ? p.player : null,
+        arts: p.arts && typeof p.arts === 'object' ? p.arts : {},
+        foils: new Set(Array.isArray(p.foils) ? p.foils : []),
+        playmat: validRemoteUrl(p.playmat) ? p.playmat : null,
+        sleeve: p.sleeve && (validColor(p.sleeve.c) || validRemoteUrl(p.sleeve.u)) ? p.sleeve : null,
+        rev: Number.isFinite(p.rev) ? p.rev : -1,
+        pend: null,
+      });
+    }
+    scheduleScan();
+    schedulePlaymats();
   }
 
   // ---------- local files: temporary public copies on litterbox (1h) ----------
@@ -1359,11 +1452,24 @@
     return me ? null : own;
   }
 
+  // Ready playmats are also kept in extension storage (the last few), so a reload doesn't
+  // download and convert them again.
+  const PLAYMAT_CACHE_KEY = 'playmatCache';
+  const PLAYMAT_CACHE_SIZE = 4;
+
   function playmatImage(url) {
     if (playmatImages.has(url)) return playmatImages.get(url);
     playmatImages.set(url, null);
-    send({ type: 'render', url, width: PLAYMAT_WIDTH, asData: true })
-      .then((res) => { playmatImages.set(url, res.url); schedulePlaymats(); })
+    (async () => {
+      const { [PLAYMAT_CACHE_KEY]: cache = {} } = await chrome.storage.local.get(PLAYMAT_CACHE_KEY);
+      if (cache[url]) return cache[url].d;
+      const { url: data } = await send({ type: 'render', url, width: PLAYMAT_WIDTH, asData: true });
+      const entries = Object.entries({ ...cache, [url]: { d: data, t: Date.now() } })
+        .sort((a, b) => b[1].t - a[1].t).slice(0, PLAYMAT_CACHE_SIZE);
+      chrome.storage.local.set({ [PLAYMAT_CACHE_KEY]: Object.fromEntries(entries) }).catch(() => {});
+      return data;
+    })()
+      .then((data) => { playmatImages.set(url, data); schedulePlaymats(); })
       .catch((e) => {
         // A playmat has no fallback (it must be a data URL), so try again in a while.
         console.warn('[EDHProxy] playmat failed to load, retrying soon', url, e);

@@ -200,7 +200,7 @@ async function checkForUpdate() {
 
 // Everything the user made (arts, foils, playmats, sleeves) and the card-name cache. Settings, the room
 // id and the updater's folder stay.
-const USER_DATA = ['arts', 'library', 'foils', 'deckArts', 'deckFoils', 'playmats', 'playmat', 'sleeves', 'sleeve', 'nameCache', 'hintCustomShown'];
+const USER_DATA = ['arts', 'library', 'foils', 'deckArts', 'deckFoils', 'playmats', 'playmat', 'sleeves', 'sleeve', 'nameCache', 'playmatCache', 'hintCustomShown'];
 
 $('clearData').onclick = () => { $('clearConfirm').hidden = false; };
 $('clearCancel').onclick = () => { $('clearConfirm').hidden = true; };
