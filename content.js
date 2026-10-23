@@ -5,7 +5,7 @@
   const CARD_RX = /^https:\/\/cards\.scryfall\.io\/([a-z_]+)\/(front|back)\/[0-9a-f]\/[0-9a-f]\/([0-9a-f-]{36})\./i;
   const ROOM_RX = /^\/games\/([^/]+)\/(?:play|spectate)/;
   const CHUNK_CHARS = 3000; // ntfy turns messages > 4096 bytes into attachments
-  const DEFAULT_SETTINGS = { syncEnabled: true, showOthers: true, uploadLocal: true, foilEnabled: true, server: 'https://ntfy.sh' };
+  const DEFAULT_SETTINGS = { syncEnabled: true, showOthers: true, uploadLocal: true, foilEnabled: true, manaSymbols: false, server: 'https://ntfy.sh' };
 
   // UI language follows edhplay's own setting (its i18next keeps it in localStorage).
   function siteLang() {
@@ -433,6 +433,7 @@
       if (m.type === 'attributes') {
         if (m.target === document.documentElement) onLocalPlayerChange();
         else if (m.target.tagName === 'IMG') queueImg(m.target);
+        else if (m.attributeName === 'data-ea-mana') scheduleMana();
         continue;
       }
       for (const n of m.addedNodes) {
@@ -2364,6 +2365,65 @@
     chrome.storage.local.set(changes);
   }, true);
 
+  // ---------- mana symbols instead of edhplay's letters (an option, off by default) ----------
+
+  // page-owner.js marks each of edhplay's mana circles with data-ea-mana="<symbol>" while
+  // <html data-ea-mana-symbols> is set. The circle then shows Scryfall's symbol (fetched by the
+  // background, kept in extension storage) and its letter is hidden.
+  const MANA_CACHE_KEY = 'manaSymbolCache';
+  const manaUrls = new Map(); // file name -> data URL, or null while loading / failed
+  const manaFile = (symbol) => symbol.replace(/[{}/]/g, '').toUpperCase();
+
+  function manaUrl(file) {
+    if (manaUrls.has(file)) return manaUrls.get(file);
+    manaUrls.set(file, null);
+    (async () => {
+      const { [MANA_CACHE_KEY]: cache = {} } = await chrome.storage.local.get(MANA_CACHE_KEY);
+      if (cache[file]) return cache[file];
+      const { url } = await send({ type: 'manaSymbol', file });
+      const latest = (await chrome.storage.local.get(MANA_CACHE_KEY))[MANA_CACHE_KEY] || {};
+      chrome.storage.local.set({ [MANA_CACHE_KEY]: { ...latest, [file]: url } }).catch(() => {});
+      return url;
+    })()
+      .then((url) => { manaUrls.set(file, url); scheduleMana(); })
+      .catch((e) => console.warn('[EDHProxy] mana symbol failed to load', file, e));
+    return null;
+  }
+
+  function applyMana() {
+    const on = !!settings.manaSymbols;
+    const root = document.documentElement;
+    if (on && !('eaManaSymbols' in root.dataset)) root.dataset.eaManaSymbols = '';
+    if (!on && 'eaManaSymbols' in root.dataset) delete root.dataset.eaManaSymbols;
+    if (on && !document.getElementById('edhproxy-mana-style')) {
+      const style = document.createElement('style');
+      style.id = 'edhproxy-mana-style';
+      style.textContent = '[data-ea-mana-on] { border-color: transparent !important; box-shadow: none !important; }'
+        + ' [data-ea-mana-on] > * { visibility: hidden !important; }';
+      document.head.append(style);
+    }
+    for (const el of document.querySelectorAll('[data-ea-mana]')) {
+      const file = manaFile(el.dataset.eaMana);
+      const url = on && manaUrl(file);
+      if (url) {
+        if (el.dataset.eaManaOn === file) continue;
+        // A bit smaller than edhplay's circle, so neighbouring symbols don't touch.
+        el.style.setProperty('background', `url("${url}") center / 82% no-repeat`, 'important');
+        el.dataset.eaManaOn = file;
+      } else if (el.dataset.eaManaOn) {
+        el.style.removeProperty('background');
+        delete el.dataset.eaManaOn;
+      }
+    }
+  }
+
+  let manaQueued = false;
+  function scheduleMana() {
+    if (manaQueued) return;
+    manaQueued = true;
+    requestAnimationFrame(() => { manaQueued = false; applyMana(); });
+  }
+
   // ---------- foil toggle on deck pages: card menu item and the F key ----------
 
   // Deck cards are [data-deck-card-id] elements holding the card's Scryfall image.
@@ -2513,6 +2573,7 @@
       } else if (old.foilEnabled !== settings.foilEnabled && sync) {
         publishSoon(300);
       }
+      if (old.manaSymbols !== settings.manaSymbols) applyMana();
       scheduleScan();
     }
   });
@@ -2582,12 +2643,13 @@
     }
     observer.observe(document.documentElement, {
       subtree: true, childList: true, attributes: true,
-      attributeFilter: ['src', 'data-ea-owner', 'data-ea-sleeve-owner', 'data-ea-local-player', 'data-ea-local-deck'],
+      attributeFilter: ['src', 'data-ea-owner', 'data-ea-sleeve-owner', 'data-ea-local-player', 'data-ea-local-deck', 'data-ea-mana'],
     });
     scanAll();
     scanPrintDialogs();
     scanCosmeticSettings();
     applyPlaymats();
+    applyMana();
     checkRoom();
     setInterval(checkRoom, 1000);
     // Closing Settings removes nodes, which the observer above ignores; drop a stale preview here.

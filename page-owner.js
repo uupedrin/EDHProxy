@@ -74,6 +74,28 @@
     if (owner && img.dataset.eaOwner !== owner) img.dataset.eaOwner = owner;
   }
 
+  // edhplay draws mana symbols (mana pool, costs, color identity) with a component that takes
+  // { symbol, size } and renders a colored circle with a letter. Mark that circle with the symbol
+  // so content.js can show the real mana symbol instead (an option, off by default).
+  // Walks up from the letter; the last element passed before reaching the component is the circle.
+  function tagMana(leaf) {
+    let f = fiberOf(leaf);
+    let el = null;
+    for (let d = 0; f && d < 6; d++, f = f.return) {
+      if (f.tag === 5 && f.stateNode && f.stateNode.nodeType === 1) el = f.stateNode; // host element
+      const p = f.memoizedProps;
+      if (!p || typeof p.symbol !== 'string' || !('size' in p)) continue;
+      if (el && el.dataset.eaMana !== p.symbol) el.dataset.eaMana = p.symbol;
+      return;
+    }
+  }
+
+  function tagManaIn(root) {
+    for (const el of root.querySelectorAll('span')) {
+      if (el.children.length === 0 && el.textContent.length <= 4) tagMana(el);
+    }
+  }
+
   // Only cards in your own hand carry localPlayerId, so remember it once seen.
   function findLocalPlayer() {
     for (const el of document.querySelectorAll('.hand-card')) {
@@ -149,21 +171,31 @@
       setRootData('eaPlayers', Object.keys(names).length ? JSON.stringify(names) : null);
     }
     for (const img of document.images) tag(img);
+    // content.js sets this while the mana symbols option is on.
+    if (manaWanted()) tagManaIn(document.body);
   }
 
+  const manaWanted = () => 'eaManaSymbols' in document.documentElement.dataset;
+
   new MutationObserver((mutations) => {
+    const mana = manaWanted();
     for (const m of mutations) {
       if (m.type === 'attributes') {
         if (m.target.tagName === 'IMG') tag(m.target);
+        else if (m.target === document.documentElement && mana) tagManaIn(document.body);
         continue;
       }
       for (const n of m.addedNodes) {
         if (n.nodeType !== 1) continue;
         if (n.tagName === 'IMG') tag(n);
         else for (const i of n.querySelectorAll('img')) tag(i);
+        if (mana) {
+          if (n.tagName === 'SPAN' && n.children.length === 0) tagMana(n);
+          else tagManaIn(n);
+        }
       }
     }
-  }).observe(document.documentElement, { subtree: true, childList: true, attributes: true, attributeFilter: ['src'] });
+  }).observe(document.documentElement, { subtree: true, childList: true, attributes: true, attributeFilter: ['src', 'data-ea-mana-symbols'] });
 
   refresh();
   setInterval(refresh, 2000);

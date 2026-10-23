@@ -121,6 +121,15 @@ async function renderImage(url, width, foil, asData) {
   return blobToDataUrl(await canvas.convertToBlob({ type: 'image/webp', quality: 0.92 }));
 }
 
+// Scryfall's mana symbol SVGs, as data URLs: svgs.scryfall.io refuses requests that carry
+// edhplay's Referer, so the page can't load them itself.
+async function manaSymbol(file) {
+  if (!/^[A-Z0-9½∞]{1,4}$/.test(file)) throw new Error('bad symbol');
+  const res = await fetch(`https://svgs.scryfall.io/card-symbols/${encodeURIComponent(file)}.svg`, { signal: AbortSignal.timeout(15000) });
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  return blobToDataUrl(await res.blob());
+}
+
 function blobToDataUrl(blob) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -220,6 +229,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   (async () => {
     try {
       if (msg.type === 'cardInfo') sendResponse({ ok: true, ...(await cardInfo(msg.id)) });
+      else if (msg.type === 'manaSymbol') sendResponse({ ok: true, url: await manaSymbol(msg.file) });
       else if (msg.type === 'publish') sendResponse({ ok: await publish(msg.url, msg.body) });
       else if (msg.type === 'litterbox') sendResponse({ ok: true, url: await litterbox(msg.dataUrl) });
       else if (msg.type === 'checkUpdate') sendResponse({ ok: true, ...(await checkForUpdate()) });

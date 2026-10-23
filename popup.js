@@ -1,4 +1,4 @@
-const DEFAULT_SETTINGS = { syncEnabled: true, uploadLocal: true, showOthers: true, foilEnabled: true, server: 'https://ntfy.sh' };
+const DEFAULT_SETTINGS = { syncEnabled: true, uploadLocal: true, showOthers: true, foilEnabled: true, manaSymbols: false, server: 'https://ntfy.sh' };
 const $ = (id) => document.getElementById(id);
 
 let settings = { ...DEFAULT_SETTINGS };
@@ -25,6 +25,7 @@ async function saveSettings() {
     syncEnabled: $('syncEnabled').checked,
     showOthers: $('showOthers').checked,
     foilEnabled: $('foilEnabled').checked,
+    manaSymbols: $('manaSymbols').checked,
     uploadLocal: $('uploadLocal').checked,
     server: $('server').value.trim() || DEFAULT_SETTINGS.server,
   };
@@ -209,7 +210,7 @@ async function checkForUpdate() {
 
 // Everything the user made (arts, foils, playmats, sleeves) and the card-name cache. Settings, the room
 // id and the updater's folder stay.
-const USER_DATA = ['arts', 'library', 'foils', 'deckArts', 'deckFoils', 'playmats', 'playmat', 'sleeves', 'sleeve', 'nameCache', 'playmatCache', 'hintCustomShown'];
+const USER_DATA = ['arts', 'library', 'foils', 'deckArts', 'deckFoils', 'playmats', 'playmat', 'sleeves', 'sleeve', 'nameCache', 'playmatCache', 'manaSymbolCache', 'hintCustomShown'];
 
 $('clearData').onclick = () => { $('clearConfirm').hidden = false; };
 $('clearCancel').onclick = () => { $('clearConfirm').hidden = true; };
@@ -222,7 +223,7 @@ $('clearYes').onclick = async () => {
   $('checkResult').textContent = t('cleared');
 };
 
-for (const id of ['syncEnabled', 'showOthers', 'uploadLocal', 'foilEnabled']) $(id).addEventListener('change', saveSettings);
+for (const id of ['syncEnabled', 'showOthers', 'uploadLocal', 'foilEnabled', 'manaSymbols']) $(id).addEventListener('change', saveSettings);
 $('server').addEventListener('change', saveSettings);
 
 (async () => {
@@ -242,6 +243,7 @@ $('server').addEventListener('change', saveSettings);
   $('syncEnabled').checked = settings.syncEnabled;
   $('showOthers').checked = settings.showOthers;
   $('foilEnabled').checked = settings.foilEnabled;
+  $('manaSymbols').checked = settings.manaSymbols;
   $('uploadLocal').checked = settings.uploadLocal;
   $('server').value = settings.server;
   renderArts();
