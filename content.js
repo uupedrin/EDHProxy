@@ -376,7 +376,29 @@
     }
   }
 
+  // The library's shuffle animation draws flying card backs from a CSS variable, --sleeve-url,
+  // that edhplay sets inline. Point it at each player's custom sleeve too (keeping edhplay's
+  // value to put back).
+  function applySleeveVars() {
+    for (const zone of document.querySelectorAll('[data-zone="library"][data-player-id]')) {
+      const sleeve = sleeveFor(zone.dataset.playerId);
+      const value = sleeve ? `url("${sleeveImage(sleeve)}")` : null;
+      if (value) {
+        if (zone.dataset.eaSleeveVar === value) continue;
+        if (!zone.dataset.eaSleeveVar) zone.dataset.eaSleeveVarOrig = zone.style.getPropertyValue('--sleeve-url');
+        zone.style.setProperty('--sleeve-url', value, 'important');
+        zone.dataset.eaSleeveVar = value;
+      } else if (zone.dataset.eaSleeveVar) {
+        const orig = zone.dataset.eaSleeveVarOrig;
+        if (orig) zone.style.setProperty('--sleeve-url', orig); else zone.style.removeProperty('--sleeve-url');
+        delete zone.dataset.eaSleeveVar;
+        delete zone.dataset.eaSleeveVarOrig;
+      }
+    }
+  }
+
   function scanAll() {
+    applySleeveVars();
     for (const img of document.querySelectorAll('img')) processImg(img);
     // The deck we play may only be guessed once our cards show up: announce its arts then.
     // (Marked as announced right away so frequent scans don't keep postponing the publish.)
@@ -1497,6 +1519,7 @@
   }
 
   function applyPlaymats() {
+    applySleeveVars(); // runs on the same table changes
     for (const board of document.querySelectorAll('[data-player-board-id]')) {
       const url = playmatUrlFor(board.dataset.playerBoardId);
       if (!url) {
