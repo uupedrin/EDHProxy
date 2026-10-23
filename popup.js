@@ -60,6 +60,15 @@ function renderArts() {
   }
 }
 
+// What a player shares: "3 arts · 2 foils · playmat · sleeve".
+function shared(p) {
+  const parts = [p.count === 1 ? t('arts1') : t('artsN', { n: p.count })];
+  if (p.foils) parts.push(p.foils === 1 ? t('foils1') : t('foilsN', { n: p.foils }));
+  if (p.playmat) parts.push(t('sharedPlaymat'));
+  if (p.sleeve) parts.push(t('sharedSleeve'));
+  return parts.join(' · ');
+}
+
 async function renderStatus() {
   const box = $('status');
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -88,7 +97,7 @@ async function renderStatus() {
   );
   if (status.peers.length) {
     box.append(el('ul', { className: 'peers' }, status.peers.map((p, i) =>
-      el('li', { textContent: `${p.name || t('player', { n: i + 1 })} — ${p.count === 1 ? t('arts1') : t('artsN', { n: p.count })}` }))));
+      el('li', { textContent: `${p.name || t('player', { n: i + 1 })} — ${shared(p)}` }))));
   } else {
     box.append(el('p', { className: 'small', textContent: t('statusAlone') }));
   }

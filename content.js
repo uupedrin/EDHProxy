@@ -528,6 +528,13 @@
       let sleeve = null;
       for (const part of p.pend.parts.values()) {
         for (const e of part) {
+          // A local file still uploading on their side: keep what we had for it.
+          if (Array.isArray(e) && e[2] === 'pending' && typeof e[0] === 'string') {
+            if (e[0] === 'playmat') playmat = p.playmat;
+            else if (e[0] === 'sleeve') sleeve = p.sleeve;
+            else if (p.arts[e[0]]) arts[e[0]] = p.arts[e[0]];
+            continue;
+          }
           // The playmat travels as ["playmat", url, "playmat"]; older versions skip the key.
           if (Array.isArray(e) && e[0] === 'playmat') {
             if (validRemoteUrl(e[1])) playmat = e[1];
@@ -555,7 +562,8 @@
       p.sleeve = sleeve;
       p.rev = msg.r;
       p.pend = null;
-      p.player = typeof msg.p === 'string' && msg.p.length <= 100 ? msg.p : null;
+      // Right after a reload they may not know their player id yet; keep the one we knew.
+      p.player = typeof msg.p === 'string' && msg.p.length <= 100 ? msg.p : p.player;
       scheduleScan();
       schedulePlaymats();
       saveRemoteSoon();
@@ -624,25 +632,37 @@
 
   const HOST_TTL = 60 * 60 * 1000;
   const HOST_REFRESH = 10 * 60 * 1000; // re-upload when less than this is left
-  const hosted = new Map();  // data URL -> { url, exp }
+  // Uploads are reused while they last (across reloads and games, through extension storage)
+  // instead of filling litterbox with copies. Keyed by a short fingerprint of the data URL.
+  const HOSTED_KEY = 'hostedCache';
+  const hosted = new Map();  // fingerprint -> { url, exp }
   const hosting = new Set(); // data URLs being uploaded
   const wanted = new Set();  // local arts of our cards seen on the table this game
 
+  const fingerprint = (dataUrl) => `${dataUrl.length}:${dataUrl.slice(40, 120)}:${dataUrl.slice(-160)}`;
+
   function hostedUrl(dataUrl) {
-    const h = hosted.get(dataUrl);
+    const h = hosted.get(fingerprint(dataUrl));
     return h && h.exp > Date.now() ? h.url : null;
+  }
+
+  function saveHosted() {
+    const now = Date.now();
+    for (const [k, h] of hosted) if (h.exp <= now) hosted.delete(k);
+    chrome.storage.local.set({ [HOSTED_KEY]: Object.fromEntries(hosted) }).catch(() => {});
   }
 
   // Uploads only while someone else with the extension is in the room to see them.
   function shareLocalArts() {
     if (!sync || !settings.uploadLocal || remote.size === 0) return;
     for (const dataUrl of wanted) {
-      const h = hosted.get(dataUrl);
+      const h = hosted.get(fingerprint(dataUrl));
       if ((h && h.exp - Date.now() > HOST_REFRESH) || hosting.has(dataUrl)) continue;
       hosting.add(dataUrl);
       send({ type: 'litterbox', dataUrl })
         .then((res) => {
-          hosted.set(dataUrl, { url: res.url, exp: Date.now() + HOST_TTL });
+          hosted.set(fingerprint(dataUrl), { url: res.url, exp: Date.now() + HOST_TTL });
+          saveHosted();
           publishSoon(300);
         })
         .catch((e) => console.warn('[EDHProxy] litterbox upload failed', e))
@@ -664,22 +684,22 @@
       if (on) foils[k] = true; else delete foils[k];
     }
     const entries = [];
-    for (const [k, a] of Object.entries(arts)) {
-      const u = a.u.startsWith('data:') ? (settings.uploadLocal && hostedUrl(a.u)) : a.u;
-      if (validRemoteUrl(u)) entries.push([k, u, a.m]);
-    }
+    // A local file whose litterbox copy isn't up yet (right after a reload) goes out as
+    // [key, "", "pending"], so the others keep showing what they had instead of dropping it.
+    // Older versions skip it (no URL).
+    const share = (key, u, mode) => {
+      const local = u.startsWith('data:');
+      const url = local ? (settings.uploadLocal && hostedUrl(u)) : u;
+      if (validRemoteUrl(url)) entries.push([key, url, mode]);
+      else if (local && settings.uploadLocal) entries.push([key, '', 'pending']);
+    };
+    for (const [k, a] of Object.entries(arts)) share(k, a.u, a.m);
     if (settings.foilEnabled) for (const name of Object.keys(foils)) entries.push(['foil:' + name, '', 'foil']);
     const mat = ownPlaymatUrl();
-    if (mat) {
-      const u = mat.startsWith('data:') ? (settings.uploadLocal && hostedUrl(mat)) : mat;
-      if (validRemoteUrl(u)) entries.push(['playmat', u, 'playmat']);
-    }
+    if (mat) share('playmat', mat, 'playmat');
     const sleeve = ownSleeve();
     if (sleeve && sleeve.c) entries.push(['sleeve', sleeve.c, 'matte']);
-    else if (sleeve) {
-      const u = sleeve.u.startsWith('data:') ? (settings.uploadLocal && hostedUrl(sleeve.u)) : directImageUrl(sleeve.u);
-      if (validRemoteUrl(u)) entries.push(['sleeve', u, 'sleeve']);
-    }
+    else if (sleeve) share('sleeve', directImageUrl(sleeve.u), 'sleeve');
     const chunks = [[]];
     let size = 0;
     for (const e of entries) {
@@ -717,8 +737,6 @@
     if (lastRoom !== undefined) delete document.documentElement.dataset.eaLocalPlayer;
     lastRoom = room;
     announcedPlayer = null;
-    // Every game gets fresh uploads.
-    hosted.clear();
     wanted.clear();
     stopSync();
     if (room && settings.syncEnabled) startSync(room);
@@ -2495,18 +2513,24 @@
       peers: [...remote.values()].map(p => ({
         name: (p.player && names[p.player]) || null,
         count: Object.keys(p.arts).length,
+        foils: p.foils.size,
+        playmat: !!p.playmat,
+        sleeve: !!p.sleeve,
       })),
     });
   });
 
   async function init() {
-    const data = await chrome.storage.local.get(['settings', 'arts', 'library', 'foils', 'deckArts', 'deckFoils', 'playmats', 'playmat', 'sleeves', 'sleeve', 'nameCache', 'clientId', 'hintCustomShown']);
+    const data = await chrome.storage.local.get(['settings', 'arts', 'library', 'foils', 'deckArts', 'deckFoils', 'playmats', 'playmat', 'sleeves', 'sleeve', 'nameCache', 'clientId', 'hintCustomShown', HOSTED_KEY]);
     ownFoils = data.foils || {};
     deckArts = data.deckArts || {};
     deckFoils = data.deckFoils || {};
     playmats = data.playmats || [];
     activePlaymat = data.playmat || null;
     sleeves = data.sleeves || [];
+    for (const [k, h] of Object.entries(data[HOSTED_KEY] || {})) {
+      if (h && validRemoteUrl(h.url) && h.exp > Date.now()) hosted.set(k, h);
+    }
     activeSleeve = data.sleeve || null;
     settings = { ...DEFAULT_SETTINGS, ...(data.settings || {}) };
     ownArts = data.arts || {};
