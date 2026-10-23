@@ -46,6 +46,10 @@ When a new version is out, the extension icon shows a **↑** badge. Click the i
 
 The first time, the browser asks you to pick the extension folder (the one you chose in **Load unpacked**) and to allow saving there.
 
+You can also look for a new version right away with **Check for updates** in the popup; when there is one, the button turns into **Update now**.
+
+Some browsers don't let extensions save into a folder (Brave turns this off by default). There, the update page gives you the zip and the steps to update by hand. On Brave you can enable one-click updates at `brave://flags/#file-system-access-api` and restart the browser.
+
 You can also update by hand: download the new zip and extract it over the same folder. The extension notices within a minute and reloads itself.
 
 Nothing is installed on your system and nothing runs outside the browser. The extension only asks GitHub every 6 hours whether there's a new version.

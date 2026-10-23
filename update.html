@@ -16,6 +16,12 @@
     button.primary:hover { background: var(--accent-hover); }
     button:disabled { opacity: .5; cursor: default; }
     .hidden { display: none; }
+    a.button { display: inline-flex; align-items: center; height: 40px; padding: 0 16px; border-radius: 6px; font-size: 14px;
+      font-weight: 500; text-decoration: none; background: var(--accent); color: #fff; }
+    a.button:hover { background: var(--accent-hover); }
+    .steps { margin: 0 0 12px; padding-left: 20px; }
+    .steps li { margin-bottom: 4px; }
+    #manual .small { margin-top: 12px; }
   </style>
 </head>
 <body>
@@ -24,10 +30,25 @@
   </header>
   <section class="card">
     <p id="versions"></p>
-    <p class="small" data-i18n="upd_firstTime"></p>
-    <div class="buttons">
-      <button id="go" class="primary" data-i18n="updateNow"></button>
-      <button id="pick" class="hidden" data-i18n="upd_pickOther"></button>
+    <div id="auto">
+      <p class="small" data-i18n="upd_firstTime"></p>
+      <div class="buttons">
+        <button id="go" class="primary" data-i18n="updateNow"></button>
+        <button id="pick" class="hidden" data-i18n="upd_pickOther"></button>
+      </div>
+    </div>
+    <!-- Browsers without the folder picker (Brave turns it off): update by hand. -->
+    <div id="manual" class="hidden">
+      <p data-i18n="upd_noPicker"></p>
+      <ol class="steps">
+        <li data-i18n="upd_step1"></li>
+        <li data-i18n="upd_step2"></li>
+        <li data-i18n="upd_step3"></li>
+      </ol>
+      <div class="buttons">
+        <a id="download" class="button primary" data-i18n="upd_download"></a>
+      </div>
+      <p class="small" data-i18n="upd_brave"></p>
     </div>
     <p id="status"></p>
   </section>

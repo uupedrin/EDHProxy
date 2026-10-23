@@ -120,6 +120,20 @@
     }
   }
 
+  // The lobby knows our deck only until the game starts (or the page reloads), so remember it per
+  // room for the rest of the game.
+  function roomDeck(fromLobby) {
+    const room = (location.pathname.match(/^\/games\/([^/]+)/) || [])[1];
+    if (!room) return fromLobby;
+    const key = 'edhpa-deck:' + room;
+    try {
+      if (fromLobby) localStorage.setItem(key, fromLobby);
+      return fromLobby || localStorage.getItem(key);
+    } catch {
+      return fromLobby;
+    }
+  }
+
   function refresh() {
     loadStore('meta', /\/assets\/playerMetadataStore-[\w-]+\.js$/, st => st.players instanceof Map && 'localPlayerId' in st);
     loadStore('lobby', /\/assets\/lobbyStore-[\w-]+\.js$/, st => st.players instanceof Map && 'setPlayerDeck' in st);
@@ -128,7 +142,7 @@
     if (local) setRootData('eaLocalPlayer', String(local));
     const lobby = stores.lobby && stores.lobby.getState();
     const mine = lobby && local && lobby.players.get(local);
-    setRootData('eaLocalDeck', mine && mine.deckId ? String(mine.deckId) : null);
+    setRootData('eaLocalDeck', roomDeck(mine && mine.deckId ? String(mine.deckId) : null));
     if (state) {
       const names = {};
       for (const [id, p] of state.players) if (p && p.username) names[id] = String(p.username);

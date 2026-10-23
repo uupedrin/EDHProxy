@@ -99,7 +99,8 @@ function paintFoil(ctx, w, h) {
 // which can't skip the Referer like <img referrerpolicy> does, and hosts like Scryfall or imgur
 // refuse hotlinks from edhplay; a data URL sidesteps that.
 async function renderImage(url, width, foil, asData) {
-  const blob = await (await fetch(url, { credentials: 'omit', signal: AbortSignal.timeout(20000) })).blob();
+  // Generous: playmats are big and litterbox can be slow; this only guards against a stuck request.
+  const blob = await (await fetch(url, { credentials: 'omit', signal: AbortSignal.timeout(120000) })).blob();
   const full = await createImageBitmap(blob);
   const shrink = width && full.width > width * 1.2;
   if (!shrink && !foil) {

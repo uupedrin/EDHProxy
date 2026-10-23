@@ -161,16 +161,23 @@ $('importFile').onchange = async () => {
   $('importFile').value = '';
 };
 
+const openUpdater = () => chrome.tabs.create({ url: chrome.runtime.getURL('update.html') });
+
+// With a new version known, "Check for updates" becomes "Update now".
 function showUpdate(update) {
   $('update').hidden = !update;
+  const button = $('checkUpdate');
+  button.textContent = t(update ? 'updateNow' : 'checkUpdate');
+  button.classList.toggle('accent', !!update);
+  button.onclick = update ? openUpdater : checkForUpdate;
   if (!update) return;
   $('updateTitle').textContent = t('updateAvailable', { version: update.version });
   $('updateLink').href = update.url;
 }
 
-$('updateNow').onclick = () => chrome.tabs.create({ url: chrome.runtime.getURL('update.html') });
+$('updateNow').onclick = openUpdater;
 
-$('checkUpdate').onclick = async () => {
+async function checkForUpdate() {
   const button = $('checkUpdate'), out = $('checkResult');
   button.disabled = true;
   out.hidden = false;
@@ -189,7 +196,7 @@ $('checkUpdate').onclick = async () => {
   out.textContent = result === 'available' ? t('updateAvailable', { version: update.version })
     : result === 'latest' ? t('upToDate') : t('checkFailed') + (detail ? ` (${detail})` : '');
   button.disabled = false;
-};
+}
 
 // Everything the user made (arts, foils, playmats, sleeves) and the card-name cache. Settings, the room
 // id and the updater's folder stay.
@@ -214,7 +221,13 @@ $('server').addEventListener('change', saveSettings);
   if (data.siteLang) lang = data.siteLang;
   applyStaticText();
   $('version').textContent = 'v' + chrome.runtime.getManifest().version;
-  showUpdate(data.update);
+  // A notice left over from before a manual update doesn't count.
+  const isNewer = (a, b) => {
+    const pa = a.split('.').map(Number), pb = b.split('.').map(Number);
+    for (let i = 0; i < 3; i++) if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0);
+    return false;
+  };
+  showUpdate(data.update && isNewer(data.update.version, chrome.runtime.getManifest().version) ? data.update : null);
   settings = { ...DEFAULT_SETTINGS, ...(data.settings || {}) };
   arts = data.arts || {};
   $('syncEnabled').checked = settings.syncEnabled;

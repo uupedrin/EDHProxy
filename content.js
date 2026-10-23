@@ -110,7 +110,33 @@
   // (page-owner.js reads it from edhplay's lobby).
   function currentDeck() {
     const page = location.pathname.match(/^\/decks\/([0-9a-f-]{36})/i);
-    return page ? page[1] : (document.documentElement.dataset.eaLocalDeck || null);
+    return page ? page[1] : (document.documentElement.dataset.eaLocalDeck || inferDeck());
+  }
+
+  // In a game whose lobby this browser never saw (joined after it started), edhplay no longer
+  // says which deck we play. Guess it: the deck whose own arts and foils name the most of our
+  // cards on screen (commander, hand, battlefield).
+  let inferred = { room: null, deck: null, at: 0 };
+  function inferDeck() {
+    const room = currentRoom();
+    if (!room) return null;
+    if (inferred.room === room && Date.now() - inferred.at < 2000) return inferred.deck;
+    const me = myPlayer();
+    const names = new Set();
+    for (const img of document.querySelectorAll('img[data-ea-owner]')) {
+      if (me && img.dataset.eaOwner !== me) continue;
+      const card = parseCard(img.dataset.eaSrc && img.getAttribute('src') === img.dataset.eaSrc ? img.dataset.eaOrig : img.getAttribute('src'));
+      for (const n of (card && nameCache[card.id]) || []) names.add(n.toLowerCase());
+    }
+    let best = null, bestScore = 0;
+    for (const deck of new Set([...Object.keys(deckArts), ...Object.keys(deckFoils)])) {
+      const keys = [...Object.keys(deckArts[deck] || {}).map(k => k.replace(/^name:/, '')), ...Object.keys(deckFoils[deck] || {})];
+      const score = new Set(keys.filter(k => names.has(k))).size;
+      if (score > bestScore) { best = deck; bestScore = score; }
+    }
+    // Keep the last guess while nothing on screen points anywhere (e.g. between zone changes).
+    inferred = { room, deck: best || (inferred.room === room ? inferred.deck : null), at: Date.now() };
+    return inferred.deck;
   }
 
   // Deck covers (My Decks, Explore) sit in a tile with data-deck-id, or link to their deck; every
@@ -309,6 +335,12 @@
 
   function scanAll() {
     for (const img of document.querySelectorAll('img')) processImg(img);
+    // The deck we play may only be guessed once our cards show up: announce its arts then.
+    // (Marked as announced right away so frequent scans don't keep postponing the publish.)
+    if (sync && currentDeck() !== announcedDeck) {
+      announcedDeck = currentDeck();
+      publishSoon(500);
+    }
   }
 
   let scanQueued = false;
@@ -1332,7 +1364,11 @@
     playmatImages.set(url, null);
     send({ type: 'render', url, width: PLAYMAT_WIDTH, asData: true })
       .then((res) => { playmatImages.set(url, res.url); schedulePlaymats(); })
-      .catch((e) => console.warn('[EDHProxy] playmat failed to load', url, e));
+      .catch((e) => {
+        // A playmat has no fallback (it must be a data URL), so try again in a while.
+        console.warn('[EDHProxy] playmat failed to load, retrying soon', url, e);
+        setTimeout(() => { playmatImages.delete(url); schedulePlaymats(); }, 15000);
+      });
     return null;
   }
 

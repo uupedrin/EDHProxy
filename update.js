@@ -142,5 +142,13 @@ async function findLatest() {
     return;
   }
   $('versions').textContent = t('upd_versions', { current, latest });
+  // No folder picker (Brave turns it off): download the zip and extract it over the folder; the
+  // extension notices the new manifest within a minute and reloads itself.
+  if (typeof window.showDirectoryPicker !== 'function') {
+    $('auto').classList.add('hidden');
+    $('manual').classList.remove('hidden');
+    $('download').href = `https://github.com/${REPO}/releases/download/v${latest}/edhproxy.zip`;
+    return;
+  }
   $('go').disabled = false;
 })();
