@@ -1472,8 +1472,13 @@
   }
 
   function showHint() {
+    showToast(t('hint'));
+  }
+
+  // A short message at the bottom of the page, in edhplay's style.
+  function showToast(text) {
     const el = document.createElement('div');
-    el.textContent = t('hint');
+    el.textContent = text;
     Object.assign(el.style, {
       position: 'fixed', left: '50%', bottom: '24px', transform: 'translateX(-50%)', zIndex: 2147483646,
       background: '#18181b', color: '#d4d4d8', padding: '12px 16px', borderRadius: '8px',
@@ -1543,6 +1548,7 @@
   function applyPlaymats() {
     applySleeveVars(); // runs on the same page changes
     rememberDeckNames();
+    injectExportProxies();
     for (const board of document.querySelectorAll('[data-player-board-id]')) {
       const url = playmatUrlFor(board.dataset.playerBoardId);
       if (!url) {
@@ -2444,6 +2450,308 @@
     if (manaQueued) return;
     manaQueued = true;
     requestAnimationFrame(() => { manaQueued = false; applyMana(); });
+  }
+
+  // ---------- "Proxies" on deck pages: export / import a deck's arts and foils ----------
+
+  // A button next to edhplay's Export / Import that saves this deck's custom look as a file to
+  // send to someone: the art each card uses in this deck (its own choice, or the all-decks one)
+  // and which cards are foil. edhplay's two buttons are found by their upload/download icons
+  // (same path start), so it doesn't depend on the site's language.
+  const EXPORT_ICON_PATH = 'M21 15v4';
+  const PROXIES_ICON = '<svg stroke="currentColor" fill="none" stroke-width="2" viewBox="0 0 24 24" stroke-linecap="round" '
+    + 'stroke-linejoin="round" height="1em" width="1em" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">'
+    + '<path d="M8 6V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-2"/>'
+    + '<rect x="3" y="6" width="13" height="16" rx="2"/>'
+    + '</svg>';
+
+  function findDeckIoButtons() {
+    const io = [...document.querySelectorAll('button')].filter((b) => {
+      const path = b.querySelector(':scope > svg path');
+      return path && (path.getAttribute('d') || '').startsWith(EXPORT_ICON_PATH);
+    });
+    for (const exportBtn of io) {
+      const importBtn = io.find(b => b !== exportBtn && b.parentElement === exportBtn.parentElement);
+      if (importBtn && exportBtn.compareDocumentPosition(importBtn) & Node.DOCUMENT_POSITION_FOLLOWING) return { exportBtn, importBtn };
+    }
+    return null;
+  }
+
+  function injectExportProxies() {
+    const deck = location.pathname.match(/^\/decks\/([0-9a-f-]{36})/i);
+    const existing = document.querySelector('[data-ea-export-proxies]');
+    if (!deck) { if (existing) existing.remove(); return; }
+    if (existing && existing.dataset.eaLang === siteLang()) return;
+    const found = findDeckIoButtons();
+    if (!found) return;
+    if (existing) existing.remove();
+    // One button only: a fourth one makes edhplay's row wrap. Importing is in its dialog.
+    // A copy of edhplay's Export button, so it looks the same, with a line icon in the style of
+    // its others (Feather): two stacked cards.
+    const btn = found.exportBtn.cloneNode(true);
+    btn.dataset.eaExportProxies = '1';
+    btn.dataset.eaLang = siteLang();
+    btn.innerHTML = PROXIES_ICON;
+    btn.append(document.createTextNode(t('manageProxies')));
+    btn.title = t('proxiesTitle');
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      manageDeckProxies(deck[1]).catch((err) => showToast(t('exportProxiesFailed', { msg: err.message })));
+    });
+    found.importBtn.before(btn);
+  }
+
+  // Asks for a file from Export Proxies and applies it to this deck.
+  function pickProxiesFile(deck, onDone) {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'application/json,.json';
+    input.addEventListener('change', () => {
+      const f = input.files[0];
+      if (!f) return;
+      importDeckProxies(deck, f)
+        .then(onDone)
+        .catch((err) => showToast(t('importProxiesFailed', { msg: err.message })));
+    });
+    input.click();
+  }
+
+  // Arts become this deck's choice for each card (and join the library, so they show up in
+  // Change Printing); foils are switched on for this deck.
+  async function importDeckProxies(deck, f) {
+    let data;
+    try {
+      data = JSON.parse(await f.text());
+    } catch {
+      throw new Error(t('invalidProxiesFile'));
+    }
+    if (!data || data.type !== 'edhproxy-deck' || typeof data.arts !== 'object' || !data.arts) throw new Error(t('invalidProxiesFile'));
+    const validUrl = (u) => typeof u === 'string' && u.length < 20000000 && (/^https:\/\//i.test(u) || /^data:image\//i.test(u));
+    const forDeck = { ...(deckArts[deck] || {}) };
+    let arts = 0;
+    for (const [key, a] of Object.entries(data.arts)) {
+      if (!/^name:.{1,200}$/.test(key) || !a || !validUrl(a.u)) continue;
+      const label = typeof a.label === 'string' && a.label.trim() ? a.label.trim().slice(0, 200) : key.slice(5);
+      const u = directImageUrl(a.u);
+      if (!(library[key.slice(5)] || []).some(x => x.u === u)) addToLibrary(label, u, 'full');
+      forDeck[key] = { u, m: 'full', label, t: Date.now() };
+      arts++;
+    }
+    const foilsForDeck = { ...(deckFoils[deck] || {}) };
+    let foils = 0;
+    for (const name of Array.isArray(data.foils) ? data.foils : []) {
+      if (typeof name !== 'string' || !name || name.length > 200) continue;
+      const lower = name.toLowerCase();
+      // Only what differs from the all-decks setting is stored per deck.
+      if (ownFoils[lower]) delete foilsForDeck[lower]; else foilsForDeck[lower] = true;
+      foils++;
+    }
+    if (!arts && !foils) throw new Error(t('invalidProxiesFile'));
+    deckArts = { ...deckArts, [deck]: forDeck };
+    deckFoils = { ...deckFoils };
+    if (Object.keys(foilsForDeck).length) deckFoils[deck] = foilsForDeck; else delete deckFoils[deck];
+    await chrome.storage.local.set({ library, deckArts, deckFoils });
+    showToast(t('importProxiesDone', { arts, foils }));
+  }
+
+  // What this deck would export: the art each card uses in it, and its foils (with the names as
+  // printed on the cards, for the list).
+  async function collectDeckProxies(deck) {
+    const ids = new Set();
+    for (const img of document.querySelectorAll('img')) {
+      if (img.closest('[role="dialog"]')) continue;
+      const card = parseCard(img.dataset.eaSrc && img.getAttribute('src') === img.dataset.eaSrc ? img.dataset.eaOrig : img.getAttribute('src'));
+      if (card) ids.add(card.id);
+    }
+    const arts = {};
+    const foils = new Map(); // lowercase name -> name
+    for (const id of ids) {
+      const names = await lookupName(id);
+      if (!names) continue;
+      for (const face of ['front', 'back']) {
+        const [idKey, nameKey] = artKeys(id, face);
+        const art = ownArtFor(idKey, nameKey, deck);
+        if (art && nameKey && !arts[nameKey]) arts[nameKey] = { u: art.u, label: art.label || names[face === 'back' ? 1 : 0] };
+      }
+      const keys = foilKeys(names);
+      if (ownFoilFor(keys, deck)) foils.set(keys[0], names[0]);
+    }
+    return { arts, foils };
+  }
+
+  function downloadDeckProxies(deck, arts, foils) {
+    const name = (deckNames[deck] || (document.querySelector('.chakra-editable__preview') || {}).textContent || deck.slice(0, 8)).trim();
+    const data = { type: 'edhproxy-deck', version: 1, deck: { id: deck, name }, arts, foils };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `edhproxy-${name.replace(/[^\w\- ]+/g, '').replace(/\s+/g, '-').toLowerCase() || 'deck'}.json`;
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    showToast(t('exportProxiesDone', { arts: Object.keys(arts).length, foils: foils.length }));
+  }
+
+  // Like edhplay's Export Deck dialog: the list of what goes in the file, an "Include foils"
+  // switch on top, Cancel and Download below.
+  // Feather icons, like edhplay's: rotate-ccw, upload, download.
+  const featherIcon = (inner) => '<svg stroke="currentColor" fill="none" stroke-width="2" viewBox="0 0 24 24" stroke-linecap="round" '
+    + 'stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">' + inner + '</svg>';
+  const RESET_ICON = featherIcon('<polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>');
+  const EXPORT_ICON = featherIcon('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>');
+  const IMPORT_ICON = featherIcon('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>');
+
+  // In edhplay's dialog style. The first view has three square buttons:
+  //   Reset Deck: choose arts and/or foils, then put this deck's cards back to normal;
+  //   Export Proxies: the list of what goes in the file, an "Include foils" switch, Export;
+  //   Import Proxies: pick a file and apply it to this deck.
+  const PROXIES_DIALOG_CSS = EDH_BASE_CSS + `
+    .backdrop { position: fixed; inset: 0; z-index: 2147483000; background: rgba(0,0,0,.64); display: flex; align-items: center;
+      justify-content: center; padding: 16px; }
+    .dialog { width: min(480px, 100%); max-height: calc(100vh - 32px); display: flex; flex-direction: column; background: #18181b;
+      border-radius: 12px; box-shadow: 0 25px 50px -12px rgba(0,0,0,.5), inset 0 0 0 1px rgba(255,255,255,.08); }
+    .head { display: flex; align-items: center; justify-content: space-between; padding: 20px 24px 16px; border-bottom: 1px solid rgba(255,255,255,.06); }
+    h2 { margin: 0; font-size: 18px; font-weight: 600; color: #fff; }
+    .x { width: 32px; height: 32px; padding: 0; justify-content: center; font-size: 16px; }
+    .body { padding: 20px 24px; display: flex; flex-direction: column; gap: 14px; min-height: 0; overflow: auto; }
+    .tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    .tile { height: auto; aspect-ratio: 1; flex-direction: column; justify-content: center; gap: 10px; padding: 12px; border-radius: 12px;
+      background: rgba(255,255,255,.03); box-shadow: inset 0 0 0 1px rgba(255,255,255,.08); color: #e4e4e7; text-align: center; line-height: 1.25; }
+    .tile:hover { background: rgba(255,255,255,.06); box-shadow: inset 0 0 0 1px #0891b2; color: #fff; }
+    .tile svg { width: 30px; height: 30px; }
+    .tile.reset svg { color: #f87171; }
+    .tile.export svg, .tile.import svg { color: #22d3ee; }
+    .switch { display: inline-flex; align-items: center; gap: 12px; cursor: pointer; font-weight: 500; color: #fafafa; user-select: none; }
+    .switch input { position: absolute; opacity: 0; pointer-events: none; }
+    .track { width: 36px; height: 20px; border-radius: 9999px; background: #3f3f46; position: relative; transition: background-color .15s; flex: none; }
+    .track::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: transform .15s; }
+    .switch input:checked + .track { background: #0891b2; }
+    .switch input:checked + .track::after { transform: translateX(16px); }
+    .switch input:focus-visible + .track { outline: 2px solid #0891b2; outline-offset: 2px; }
+    .switch.danger input:checked + .track { background: #dc2626; }
+    .list { margin: 0; padding: 10px 12px; height: 300px; max-height: 50vh; overflow: auto; border-radius: 6px; background: rgba(255,255,255,.02);
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,.1); font-size: 14px; line-height: 1.45; color: #e4e4e7; white-space: pre-wrap; }
+    .note { margin: 0; color: #a1a1aa; font-size: 13px; }
+    .none { color: #a1a1aa; }
+    .foot { display: flex; justify-content: space-between; gap: 12px; padding: 16px 24px 20px; border-top: 1px solid rgba(255,255,255,.06); }
+    button.danger-solid { background: #dc2626; color: #fff; }
+    button.danger-solid:hover { background: #b91c1c; }
+    [hidden] { display: none !important; }
+  `;
+
+  const switchHtml = (cls, extra = '') => `<label class="switch ${extra}"><input type="checkbox" class="${cls}"><span class="track"></span><span class="label"></span></label>`;
+
+  async function manageDeckProxies(deck) {
+    const host = document.createElement('div');
+    const root = host.attachShadow({ mode: 'open' });
+    root.innerHTML = `<style>${PROXIES_DIALOG_CSS}</style>
+      <div class="backdrop"><div class="dialog" role="dialog" aria-modal="true">
+        <div class="head"><h2></h2><button class="x" type="button">✕</button></div>
+        <div class="body"></div>
+        <div class="foot" hidden><button class="back" type="button"></button><button class="go" type="button"></button></div>
+      </div></div>`;
+    const $ = (sel) => root.querySelector(sel);
+    const body = $('.body'), foot = $('.foot'), go = $('.go');
+    $('.x').title = t('cancel');
+    $('.back').textContent = t('back');
+
+    const close = () => { host.remove(); document.removeEventListener('keydown', onKey, true); };
+    const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
+    document.addEventListener('keydown', onKey, true);
+    $('.backdrop').addEventListener('click', (e) => { if (e.target === $('.backdrop')) close(); });
+    $('.x').onclick = close;
+
+    // The three choices.
+    function home() {
+      $('h2').textContent = t('manageProxies');
+      foot.hidden = true;
+      body.innerHTML = '<div class="tiles"></div>';
+      const tiles = [
+        ['reset', RESET_ICON, t('mp_reset'), resetView],
+        ['export', EXPORT_ICON, t('exportProxies'), exportView],
+        ['import', IMPORT_ICON, t('importProxies'), () => pickProxiesFile(deck, close)],
+      ];
+      for (const [cls, icon, label, action] of tiles) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'tile ' + cls;
+        b.innerHTML = icon;
+        b.append(Object.assign(document.createElement('span'), { textContent: label }));
+        b.onclick = action;
+        $('.tiles').append(b);
+      }
+      $('.tile').focus();
+    }
+    $('.back').onclick = home;
+
+    // Like edhplay's Export Deck: the cards that get exported, Include foils, Export.
+    async function exportView() {
+      $('h2').textContent = t('exportProxies');
+      body.innerHTML = `${switchHtml('withFoils')}<div class="list"></div>`;
+      body.querySelector('.label').textContent = t('exportIncludeFoils');
+      go.className = 'primary go';
+      go.textContent = t('exportProxies');
+      foot.hidden = false;
+      const { arts, foils } = await collectDeckProxies(deck);
+      const box = body.querySelector('.withFoils');
+      const artNames = new Map(Object.entries(arts).map(([k, a]) => [k.slice(5), a.label]));
+      const render = () => {
+        const lines = [...artNames].map(([lower, label]) => label + (box.checked && foils.has(lower) ? ' ' + t('exportFoilMark') : ''));
+        if (box.checked) for (const [lower, label] of foils) if (!artNames.has(lower)) lines.push(label + ' ' + t('exportFoilMark'));
+        const list = body.querySelector('.list');
+        list.textContent = lines.sort((a, b) => a.localeCompare(b)).join('\n');
+        if (!lines.length) list.append(Object.assign(document.createElement('span'), { className: 'none', textContent: t('exportProxiesNothing') }));
+        go.disabled = !lines.length;
+      };
+      render();
+      box.addEventListener('change', render);
+      go.onclick = () => {
+        downloadDeckProxies(deck, arts, box.checked ? [...foils.keys()] : []);
+        close();
+      };
+    }
+
+    // Reset: arts and/or foils of this deck back to normal.
+    async function resetView() {
+      $('h2').textContent = t('mp_reset');
+      body.innerHTML = `<p class="note"></p>${switchHtml('arts', 'danger')}${switchHtml('foils', 'danger')}`;
+      const [artsLabel, foilsLabel] = body.querySelectorAll('.label');
+      const artsBox = body.querySelector('.arts'), foilsBox = body.querySelector('.foils');
+      artsBox.checked = foilsBox.checked = true;
+      go.className = 'danger-solid go';
+      go.textContent = t('mp_reset');
+      foot.hidden = false;
+      const { arts, foils } = await collectDeckProxies(deck);
+      const artCount = Object.keys(arts).length;
+      body.querySelector('.note').textContent = t('mp_resetNote');
+      artsLabel.textContent = t('mp_resetArts', { n: artCount });
+      foilsLabel.textContent = t('mp_resetFoils', { n: foils.size });
+      const update = () => { go.disabled = !((artsBox.checked && artCount) || (foilsBox.checked && foils.size)); };
+      update();
+      artsBox.onchange = foilsBox.onchange = update;
+      go.onclick = async () => {
+        go.disabled = true;
+        if (artsBox.checked) for (const a of Object.values(arts)) await activateArt(a.label, null, false);
+        if (foilsBox.checked) {
+          const forDeck = { ...(deckFoils[deck] || {}) };
+          for (const lower of foils.keys()) {
+            // Foils on for all decks are switched off here only; deck-only ones are dropped.
+            if (ownFoils[lower]) forDeck[lower] = false; else delete forDeck[lower];
+          }
+          deckFoils = { ...deckFoils };
+          if (Object.keys(forDeck).length) deckFoils[deck] = forDeck; else delete deckFoils[deck];
+          await chrome.storage.local.set({ deckFoils });
+        }
+        showToast(t('mp_resetDone'));
+        close();
+      };
+    }
+
+    for (const type of ['keydown', 'keyup', 'keypress']) root.addEventListener(type, (e) => e.stopPropagation());
+    document.documentElement.append(host);
+    home();
   }
 
   // ---------- foil toggle on deck pages: card menu item and the F key ----------

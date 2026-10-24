@@ -77,6 +77,14 @@ Choosing a different printing and confirming switches the card back to normal ar
 
 The popup (click the extension icon) shows whether you're in a room and what each player with the extension shares, and lets you export/import your arts. **Manage arts** opens the manager, with three tabs. **Cards** is a grid of every card you uploaded arts for; click one to see its arts and the decks that use each (or "All decks"), and rename or delete them. **Playmats** and **Sleeves** list your custom ones, show which is in use, and let you rename or delete them. Search works on every tab. Deck names show up once you've opened My Decks or the deck with the extension on. Under **Extension** you can **Check for updates** right away or **Clear data** (deletes all your arts, foils, playmats and sleeves; your settings stay).
 
+### Manage Proxies
+
+On a deck page, **Manage Proxies** (between edhplay's Export and Import) opens a dialog with three buttons:
+
+- **Reset Deck**: puts this deck's cards back to normal; choose the custom arts, the foils, or both. Other decks aren't affected.
+- **Export Proxies**: like edhplay's Export Deck, lists the cards with custom art (and, with **Include foils** on, the foils) and saves them as a `.json` file to send to someone. Arts from local files go inside the file.
+- **Import Proxies**: applies such a file to this deck: the arts become this deck's choice for those cards (and join your Custom folders), and the foils are switched on.
+
 ### Custom playmats
 
 Open edhplay's **Settings → Playmats**. Next to All / Free / Patreon there's a **Custom** tab with the playmats you uploaded. Click **+ Add** to upload one (image URL or a file; wide 16:9 images work best), pick it and click **Save Preferences**. Choosing one of edhplay's playmats and saving switches back. During a game, players in your room with EDHProxy see your playmat on your side of the table.
