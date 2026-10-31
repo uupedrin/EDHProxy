@@ -480,6 +480,8 @@
   // ---------- room sync (ntfy pub/sub) ----------
 
   let sync = null; // { roomId, topic, ctl, since, connected }
+  // For the popup's status: what this browser sent and uploaded in this room.
+  const syncStats = { sent: 0, lastOk: 0, lastError: null, lastErrorAt: 0, uploadsOk: 0, uploadErrors: 0, lastUploadError: null };
   let publishTimer = null;
 
   async function topicFor(roomId) {
@@ -505,6 +507,10 @@
     sync.ctl.abort();
     sync = null;
     remote.clear();
+    lastPublished = null;
+    publishRetry = 0;
+    uploadFails.clear();
+    Object.assign(syncStats, { sent: 0, lastOk: 0, lastError: null, lastErrorAt: 0, uploadsOk: 0, uploadErrors: 0, lastUploadError: null });
     scheduleScan();
     schedulePlaymats();
   }
@@ -568,12 +574,14 @@
     if (p.pend.parts.size === msg.t) {
       const arts = {};
       const foils = new Set();
+      const waiting = new Set();
       let playmat = null;
       let sleeve = null;
       for (const part of p.pend.parts.values()) {
         for (const e of part) {
           // A local file still uploading on their side: keep what we had for it.
           if (Array.isArray(e) && e[2] === 'pending' && typeof e[0] === 'string') {
+            waiting.add(e[0]);
             if (e[0] === 'playmat') playmat = p.playmat;
             else if (e[0] === 'sleeve') sleeve = p.sleeve;
             else if (p.arts[e[0]]) arts[e[0]] = p.arts[e[0]];
@@ -608,20 +616,40 @@
       p.pend = null;
       // Right after a reload they may not know their player id yet; keep the one we knew.
       p.player = typeof msg.p === 'string' && msg.p.length <= 100 ? msg.p : p.player;
+      p.at = Date.now();
+      p.waiting = waiting.size;
       scheduleScan();
       schedulePlaymats();
       saveRemoteSoon();
     }
-    // Someone new showed up: re-announce so they get our arts even if the cache expired.
+    // Someone new showed up. They read our last announcement from the channel's history (kept
+    // 12h), so only announce again when that may be gone or never went out.
     if (isNew) {
-      publishSoon(1500 + Math.random() * 2000);
+      if (!syncStats.lastOk || Date.now() - syncStats.lastOk > 6 * 60 * 60 * 1000) publishSoon(1500 + Math.random() * 2000);
       shareLocalArts();
     }
   }
 
+  // ntfy.sh allows about one message per 5 seconds after a short burst, and 250 a day per IP
+  // (all players behind the same router share it), so announcements are spaced out, skipped
+  // when nothing changed, and retried when one fails.
+  const PUBLISH_GAP = 5000;
+  let lastPublishAt = 0;
+  let lastPublished = null; // what the last successful announcement said
+  let publishRetry = 0;
   function publishSoon(delay) {
     clearTimeout(publishTimer);
-    publishTimer = setTimeout(publishAll, delay);
+    const wait = Math.max(delay, lastPublishAt + PUBLISH_GAP - Date.now());
+    publishTimer = setTimeout(publishAll, wait);
+  }
+
+  function publishFailed(e) {
+    syncStats.lastError = String((e && e.message) || e);
+    syncStats.lastErrorAt = Date.now();
+    publishRetry = Math.min(publishRetry + 1, 6);
+    const wait = [5, 15, 30, 60, 120, 300][publishRetry - 1] * 1000;
+    console.warn(`[EDHProxy] failed to publish arts, retrying in ${wait / 1000}s`, e);
+    publishSoon(wait);
   }
 
   // What the others announced is kept in this tab's sessionStorage, so a reload shows their arts,
@@ -682,6 +710,7 @@
   const hosted = new Map();  // fingerprint -> { url, exp }
   const hosting = new Set(); // data URLs being uploaded
   const wanted = new Set();  // local arts of our cards seen on the table this game
+  const uploadFails = new Map(); // data URL -> { n, next } after failed uploads
 
   const fingerprint = (dataUrl) => `${dataUrl.length}:${dataUrl.slice(40, 120)}:${dataUrl.slice(-160)}`;
 
@@ -702,14 +731,26 @@
     for (const dataUrl of wanted) {
       const h = hosted.get(fingerprint(dataUrl));
       if ((h && h.exp - Date.now() > HOST_REFRESH) || hosting.has(dataUrl)) continue;
+      const failed = uploadFails.get(dataUrl);
+      if (failed && failed.next > Date.now()) continue;
       hosting.add(dataUrl);
       send({ type: 'litterbox', dataUrl })
         .then((res) => {
           hosted.set(fingerprint(dataUrl), { url: res.url, exp: Date.now() + HOST_TTL });
+          uploadFails.delete(dataUrl);
+          syncStats.uploadsOk++;
           saveHosted();
-          publishSoon(300);
+          publishSoon(1500); // several uploads finishing close together make one announcement
         })
-        .catch((e) => console.warn('[EDHProxy] litterbox upload failed', e))
+        .catch((e) => {
+          const n = ((uploadFails.get(dataUrl) || {}).n || 0) + 1;
+          const wait = [15, 30, 60, 120, 300][Math.min(n, 5) - 1] * 1000;
+          uploadFails.set(dataUrl, { n, next: Date.now() + wait });
+          syncStats.uploadErrors++;
+          syncStats.lastUploadError = String((e && e.message) || e);
+          console.warn(`[EDHProxy] litterbox upload failed, retrying in ${wait / 1000}s`, e);
+          setTimeout(shareLocalArts, wait + 100);
+        })
         .finally(() => hosting.delete(dataUrl));
     }
   }
@@ -756,16 +797,25 @@
     const player = myPlayer();
     announcedPlayer = player;
     announcedDeck = deck;
+    const what = JSON.stringify([s.topic, player, entries]);
+    if (what === lastPublished) return; // the others already have exactly this
+    lastPublishAt = Date.now();
     for (let i = 0; i < chunks.length; i++) {
       if (sync !== s) return;
       const body = JSON.stringify({ v: 1, c: clientId, p: player, r: rev, i, t: chunks.length, e: chunks[i] });
       try {
         await send({ type: 'publish', url: `${serverUrl()}/${s.topic}`, body });
+        syncStats.sent++;
       } catch (e) {
-        console.warn('[EDHProxy] failed to publish arts', e);
+        publishFailed(e);
         return;
       }
+      lastPublishAt = Date.now();
     }
+    lastPublished = what;
+    publishRetry = 0;
+    syncStats.lastOk = Date.now();
+    syncStats.lastError = null;
   }
 
   function currentRoom() {
@@ -2924,13 +2974,26 @@
       room: currentRoom(),
       syncing: !!sync,
       connected: !!(sync && sync.connected),
-      peers: [...remote.values()].map(p => ({
+      peers: [...remote.values()].filter(p => p.rev >= 0).map(p => ({
         name: (p.player && names[p.player]) || null,
         count: Object.keys(p.arts).length,
         foils: p.foils.size,
         playmat: !!p.playmat,
         sleeve: !!p.sleeve,
+        waiting: p.waiting || 0,
+        at: p.at || 0,
       })),
+      me: {
+        sent: syncStats.sent,
+        lastOk: syncStats.lastOk,
+        lastError: syncStats.lastError,
+        lastErrorAt: syncStats.lastErrorAt,
+        // Local files of ours on the table: up on litterbox, uploading, waiting to retry.
+        uploaded: [...wanted].filter(u => hostedUrl(u)).length,
+        uploading: hosting.size,
+        retrying: [...uploadFails.keys()].filter(u => !hosting.has(u)).length,
+        lastUploadError: syncStats.lastUploadError,
+      },
     });
   });
 

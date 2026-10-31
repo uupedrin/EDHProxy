@@ -67,3 +67,8 @@ button:disabled { opacity: .6; cursor: default; }
 .confirm { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
 .confirm .small { color: var(--text); }
 .disclaimer { color: var(--dim); font-size: 11px; line-height: 1.4; margin-top: 4px; }
+.peers li { margin-bottom: 4px; }
+.peers .small { margin: 0; }
+.mine { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border); }
+.mine .strong { color: var(--muted); font-weight: 600; }
+.mine .bad { color: var(--bad); }

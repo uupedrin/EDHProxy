@@ -78,11 +78,42 @@ async function renderStatus() {
     status.connected ? t('statusSyncing') : t('statusConnecting'),
   );
   if (status.peers.length) {
-    box.append(el('ul', { className: 'peers' }, status.peers.map((p, i) =>
-      el('li', { textContent: `${p.name || t('player', { n: i + 1 })} — ${shared(p)}` }))));
+    box.append(el('ul', { className: 'peers' }, status.peers.map((p, i) => {
+      const extra = [p.at ? t('st_updated', { ago: ago(p.at) }) : '', p.waiting ? t('st_theyUpload', { n: p.waiting }) : ''].filter(Boolean).join(' · ');
+      return el('li', {}, [
+        `${p.name || t('player', { n: i + 1 })} — ${shared(p)}`,
+        extra ? el('div', { className: 'small', textContent: extra }) : '',
+      ]);
+    })));
   } else {
     box.append(el('p', { className: 'small', textContent: t('statusAlone') }));
   }
+  // What this browser sends: announcements and uploads of local files.
+  const me = status.me;
+  if (!me) return;
+  const lines = [];
+  if (me.lastError) lines.push([t('st_sendError', { msg: me.lastError, ago: ago(me.lastErrorAt) }), 'bad']);
+  else if (me.lastOk) lines.push([t('st_sent', { ago: ago(me.lastOk) }), '']);
+  else lines.push([t('st_notSent'), '']);
+  if (me.uploaded || me.uploading || me.retrying) {
+    const parts = [t('st_uploaded', { n: me.uploaded })];
+    if (me.uploading) parts.push(t('st_uploading', { n: me.uploading }));
+    if (me.retrying) parts.push(t('st_retrying', { n: me.retrying }));
+    lines.push([parts.join(' · '), me.retrying ? 'bad' : '']);
+  }
+  if (me.retrying && me.lastUploadError) lines.push([me.lastUploadError, 'bad']);
+  box.append(el('div', { className: 'mine' }, [
+    el('div', { className: 'small strong', textContent: t('st_you') }),
+    ...lines.map(([text, cls]) => el('div', { className: 'small ' + cls, textContent: text })),
+  ]));
+}
+
+// "12 s", "3 min", "1 h"
+function ago(time) {
+  const s = Math.max(0, Math.round((Date.now() - time) / 1000));
+  if (s < 60) return t('st_sec', { n: s });
+  if (s < 3600) return t('st_min', { n: Math.round(s / 60) });
+  return t('st_hour', { n: Math.round(s / 3600) });
 }
 
 $('export').onclick = async () => {
