@@ -61,6 +61,7 @@ async function renderStatus() {
     // Not an edhplay tab (or the page loaded before the extension was installed).
   }
   box.textContent = '';
+  renderServices(status);
   if (!status) {
     box.append(t('statusNoTab'));
     return;
@@ -92,7 +93,7 @@ async function renderStatus() {
   const me = status.me;
   if (!me) return;
   const lines = [];
-  if (me.lastError) lines.push([t('st_sendError', { msg: me.lastError, ago: ago(me.lastErrorAt) }), 'bad']);
+  if (me.lastError) lines.push([t('st_sendRetry'), 'bad']);
   else if (me.lastOk) lines.push([t('st_sent', { ago: ago(me.lastOk) }), '']);
   else lines.push([t('st_notSent'), '']);
   if (me.uploaded || me.uploading || me.retrying) {
@@ -101,12 +102,41 @@ async function renderStatus() {
     if (me.retrying) parts.push(t('st_retrying', { n: me.retrying }));
     lines.push([parts.join(' · '), me.retrying ? 'bad' : '']);
   }
-  if (me.retrying && me.lastUploadError) lines.push([me.lastUploadError, 'bad']);
   box.append(el('div', { className: 'mine' }, [
     el('div', { className: 'small strong', textContent: t('st_you') }),
     ...lines.map(([text, cls]) => el('div', { className: 'small ' + cls, textContent: text })),
   ]));
 }
+
+// One dot per service the extension talks to; hovering one says how it's doing.
+const SERVICE_NAMES = { ntfy: 'svc_ntfy', litterbox: 'svc_litterbox', tmpfiles: 'svc_tmpfiles', scryfall: 'svc_scryfall', github: 'svc_github' };
+
+async function renderServices(status) {
+  let res = null;
+  try { res = await chrome.runtime.sendMessage({ type: 'health' }); } catch {}
+  const box = $('services');
+  if (!res || !res.health) { box.hidden = true; return; }
+  box.hidden = false;
+  const list = $('serviceDots');
+  list.textContent = '';
+  for (const [id, key] of Object.entries(SERVICE_NAMES)) {
+    const h = res.health[id];
+    const slow = (res.services[id] || {}).slow || 5000;
+    let state = 'unknown', text = t('svc_unused');
+    if (h && !h.ok) { state = 'down'; text = t('svc_down', { error: h.error, ago: ago(h.at) }); }
+    else if (h && h.ms > slow) { state = 'slow'; text = t('svc_slow', { time: secs(h.ms), ago: ago(h.at) }); }
+    else if (h) { state = 'ok'; text = t('svc_ok', { time: secs(h.ms), ago: ago(h.at) }); }
+    // The room's live connection is the content script's.
+    if (id === 'ntfy' && status && status.syncing && !status.connected) { state = 'down'; text = t('svc_connecting'); }
+    if (id === 'tmpfiles' && !h) text = t('svc_backup');
+    const label = t(key);
+    list.append(el('span', { className: 'svc', title: `${label}: ${text}`, tabIndex: 0 }, [
+      el('span', { className: 'dot ' + state }), label,
+    ]));
+  }
+}
+
+const secs = (ms) => (ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`);
 
 // "12 s", "3 min", "1 h"
 function ago(time) {

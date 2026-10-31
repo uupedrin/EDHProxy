@@ -5,6 +5,7 @@
 //   <html data-ea-local-player="<player id>">  the player using this browser
 //   <html data-ea-players='{"<player id>":"<username>"}'>  usernames of everyone in the game
 //   <html data-ea-local-deck="<deck id>">      the deck this browser's player joined with
+//   <html data-ea-phase="lobby|game">           whether the room's game has started
 (() => {
   'use strict';
 
@@ -165,6 +166,7 @@
     const lobby = stores.lobby && stores.lobby.getState();
     const mine = lobby && local && lobby.players.get(local);
     setRootData('eaLocalDeck', roomDeck(mine && mine.deckId ? String(mine.deckId) : null));
+    setRootData('eaPhase', lobby && typeof lobby.phase === 'string' ? lobby.phase : null);
     if (state) {
       const names = {};
       for (const [id, p] of state.players) if (p && p.username) names[id] = String(p.username);

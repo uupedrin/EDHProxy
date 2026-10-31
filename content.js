@@ -33,7 +33,27 @@
   const remote = new Map();      // clientId -> { player, arts, foils: Set<name>, playmat, sleeve, rev, pend }
   const pendingNames = new Set();
 
+  // Reloading or updating the extension leaves this script running in open tabs, but every chrome.*
+  // call then throws "Extension context invalidated". Stop quietly; the next page load runs the new one.
+  const contextAlive = () => {
+    try { return !!chrome.runtime.id; } catch { return false; }
+  };
+  const orphaned = (e) => /Extension context invalidated/i.test(String(e && (e.message || e)));
+  let shutDown = null; // set once sync exists; stops it when the context is gone
+  function checkContext() {
+    if (contextAlive()) return true;
+    if (shutDown) { const f = shutDown; shutDown = null; f(); }
+    return false;
+  }
+  window.addEventListener('unhandledrejection', (ev) => {
+    if (orphaned(ev.reason)) { ev.preventDefault(); checkContext(); }
+  });
+  window.addEventListener('error', (ev) => {
+    if (orphaned(ev.error || ev.message)) { ev.preventDefault(); checkContext(); }
+  });
+
   const sendOnce = (msg) => new Promise((resolve, reject) => {
+    if (!checkContext()) return reject(new Error('Extension context invalidated.'));
     chrome.runtime.sendMessage(msg, (res) => {
       if (chrome.runtime.lastError) return reject(Object.assign(new Error(chrome.runtime.lastError.message), { channel: true }));
       if (!res || !res.ok) return reject(new Error(res ? res.error : 'no response'));
@@ -114,8 +134,9 @@
   }
 
   // In a game whose lobby this browser never saw (joined after it started), edhplay no longer
-  // says which deck we play. Guess it: the deck whose own arts and foils name the most of our
-  // cards on screen (commander, hand, battlefield).
+  // says which deck we play. Guess it from our cards on screen (commander, hand, battlefield):
+  // the deck with the most custom arts among them. Foils only break ties: lands like Command
+  // Tower are foil in many decks and would pull the guess to whichever has the most.
   let inferred = { room: null, deck: null, at: 0 };
   function inferDeck() {
     const room = currentRoom();
@@ -130,8 +151,9 @@
     }
     let best = null, bestScore = 0;
     for (const deck of new Set([...Object.keys(deckArts), ...Object.keys(deckFoils)])) {
-      const keys = [...Object.keys(deckArts[deck] || {}).map(k => k.replace(/^name:/, '')), ...Object.keys(deckFoils[deck] || {})];
-      const score = new Set(keys.filter(k => names.has(k))).size;
+      const arts = Object.entries(deckArts[deck] || {}).filter(([k, a]) => !a.none && names.has(k.replace(/^name:/, ''))).length;
+      const foils = Object.entries(deckFoils[deck] || {}).filter(([k, on]) => on && names.has(k)).length;
+      const score = arts * 1000 + foils;
       if (score > bestScore) { best = deck; bestScore = score; }
     }
     // Keep the last guess while nothing on screen points anywhere (e.g. between zone changes).
@@ -267,12 +289,18 @@
   // Scryfall's sizes of one card are the same picture (except the art_crop, which is cut).
   const sameImage = (url) => url.replace(/^(https:\/\/cards\.scryfall\.io\/)(?!art_crop\/)[a-z_]+\//, '$1*/');
 
+  // Local files shared through tmpfiles (litterbox's backup) are a page link, not an image: they
+  // are only ever shown as copies made by the background. Until one is ready: null.
+  const TMPFILES_PAGE_RX = /^https:\/\/tmpfiles\.org\/(?!dl\/)[\w-]+\/[^/?#]+$/i;
+
   function renderedUrl(url, size, foil) {
     const width = SIZE_WIDTH[size] || 0;
-    if (!width && !foil) return url;
+    const viaPage = TMPFILES_PAGE_RX.test(url);
+    if (!width && !foil && !viaPage) return url;
     const key = `${foil ? 'foil' : 'plain'}|${width}|${url}`;
     const similar = `${foil ? 'foil' : 'plain'}|${sameImage(url)}`;
-    if (rendered.has(key)) return rendered.get(key) || anyWidth.get(similar) || url;
+    const fallback = viaPage ? null : url;
+    if (rendered.has(key)) return rendered.get(key) || anyWidth.get(similar) || fallback;
     rendered.set(key, null);
     send({ type: 'render', url, width, foil })
       .then((res) => {
@@ -281,8 +309,12 @@
         anyWidth.set(similar, res.url);
         scheduleScan(); // every image showing this card picks up the rendered copy
       })
-      .catch((e) => console.warn('[EDHProxy] render failed, using the image as is', url, e));
-    return anyWidth.get(similar) || url;
+      .catch((e) => {
+        console.warn('[EDHProxy] render failed, using the image as is', url, e);
+        // A page link can't be shown as is: try again in a while (the file may still be uploading).
+        if (viaPage) setTimeout(() => { rendered.delete(key); scheduleScan(); }, 20000);
+      });
+    return anyWidth.get(similar) || fallback;
   }
 
   function hideUntilLoaded(img) {
@@ -358,6 +390,7 @@
 
     const base = art ? directImageUrl(art.u) : orig;
     const url = renderedUrl(base, card.size, foil);
+    if (!url) return; // a tmpfiles art still being fetched: keep what's shown
     preparePreview(card, orig, owner, deck);
     // Still showing the printing's own art while a custom one downloads: the browser keeps the
     // old picture on screen meanwhile, so hide it. Copies we made (data: URLs) are ready at once
@@ -382,7 +415,8 @@
   function applySleeveVars() {
     for (const zone of document.querySelectorAll('[data-zone="library"][data-player-id]')) {
       const sleeve = sleeveFor(zone.dataset.playerId);
-      const value = sleeve ? `url("${sleeveImage(sleeve)}")` : null;
+      const image = sleeve && sleeveImage(sleeve);
+      const value = image ? `url("${image}")` : null;
       if (value) {
         if (zone.dataset.eaSleeveVar === value) continue;
         if (!zone.dataset.eaSleeveVar) zone.dataset.eaSleeveVarOrig = zone.style.getPropertyValue('--sleeve-url');
@@ -474,7 +508,7 @@
     scheduleScan();
     schedulePlaymats();
     const me = myPlayer();
-    if (sync && (me !== announcedPlayer || currentDeck() !== announcedDeck)) publishSoon(300);
+    if (sync && (me !== announcedPlayer || currentDeck() !== announcedDeck || inLobby() !== announcedPhase)) publishSoon(300);
   }
 
   // ---------- room sync (ntfy pub/sub) ----------
@@ -493,7 +527,7 @@
   const serverUrl = () => (settings.server || DEFAULT_SETTINGS.server).trim().replace(/\/+$/, '');
 
   async function startSync(roomId) {
-    const s = { roomId, topic: await topicFor(roomId), ctl: new AbortController(), since: 'all', connected: false };
+    const s = { roomId, topic: await topicFor(roomId), ctl: new AbortController(), since: 'all', connected: false, started: Date.now() };
     if (currentRoom() !== roomId || !settings.syncEnabled) return;
     stopSync();
     sync = s;
@@ -516,8 +550,9 @@
   }
 
   async function streamLoop(s) {
-    let delay = 2000;
+    let delay = 2000, drops = 0;
     while (sync === s) {
+      if (!checkContext()) return;
       try {
         const res = await fetch(`${serverUrl()}/${s.topic}/json?since=${encodeURIComponent(s.since)}`, {
           signal: s.ctl.signal, cache: 'no-store', credentials: 'omit',
@@ -525,6 +560,7 @@
         if (!res.ok || !res.body) throw new Error('HTTP ' + res.status);
         s.connected = true;
         delay = 2000;
+        drops = 0;
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let buf = '';
@@ -547,7 +583,10 @@
         }
       } catch (e) {
         if (s.ctl.signal.aborted) return;
-        console.warn('[EDHProxy] sync connection dropped, retrying', e);
+        // Long-lived streams drop now and then (network change, sleeping tab); that is routine and
+        // reconnects at once, so only warn when it keeps failing.
+        if (++drops >= 3) console.warn('[EDHProxy] sync connection keeps dropping, retrying', e);
+        else console.debug('[EDHProxy] sync connection dropped, reconnecting', e);
       }
       s.connected = false;
       if (sync !== s) return;
@@ -644,7 +683,7 @@
   }
 
   function publishFailed(e) {
-    syncStats.lastError = String((e && e.message) || e);
+    syncStats.lastError = String((e && e.message) || e).slice(0, 120);
     syncStats.lastErrorAt = Date.now();
     publishRetry = Math.min(publishRetry + 1, 6);
     const wait = [5, 15, 30, 60, 120, 300][publishRetry - 1] * 1000;
@@ -747,7 +786,7 @@
           const wait = [15, 30, 60, 120, 300][Math.min(n, 5) - 1] * 1000;
           uploadFails.set(dataUrl, { n, next: Date.now() + wait });
           syncStats.uploadErrors++;
-          syncStats.lastUploadError = String((e && e.message) || e);
+          syncStats.lastUploadError = String((e && e.message) || e).slice(0, 120);
           console.warn(`[EDHProxy] litterbox upload failed, retrying in ${wait / 1000}s`, e);
           setTimeout(shareLocalArts, wait + 100);
         })
@@ -755,9 +794,24 @@
     }
   }
 
+  // Before the game starts (the room's lobby) the others only see our playmat: announce just that,
+  // and the selected deck's arts, foils and sleeve once the game begins.
+  // Right after the page loads edhplay hasn't said yet; treat that as the lobby for a few seconds
+  // (and check again then), so a reload in the lobby doesn't send the deck's arts.
+  const PHASE_WAIT = 10000;
+  const phaseWait = () => (document.documentElement.dataset.eaPhase || !sync ? 0 : Math.max(0, PHASE_WAIT - (Date.now() - sync.started)));
+  const inLobby = () => {
+    const phase = document.documentElement.dataset.eaPhase;
+    return phase ? phase === 'lobby' : phaseWait() > 0;
+  };
+  let announcedPhase = null;
+
   async function publishAll() {
     const s = sync;
     if (!s) return;
+    const lobby = inLobby();
+    announcedPhase = lobby;
+    if (phaseWait()) setTimeout(() => publishSoon(0), phaseWait() + 100); // look again once it's known
     // Arts and foils as the deck we're playing has them (its own choices over the all-decks ones).
     const deck = currentDeck();
     const arts = { ...ownArts };
@@ -778,11 +832,13 @@
       if (validRemoteUrl(url)) entries.push([key, url, mode]);
       else if (local && settings.uploadLocal) entries.push([key, '', 'pending']);
     };
-    for (const [k, a] of Object.entries(arts)) share(k, a.u, a.m);
-    if (settings.foilEnabled) for (const name of Object.keys(foils)) entries.push(['foil:' + name, '', 'foil']);
+    if (!lobby) {
+      for (const [k, a] of Object.entries(arts)) share(k, a.u, a.m);
+      if (settings.foilEnabled) for (const name of Object.keys(foils)) entries.push(['foil:' + name, '', 'foil']);
+    }
     const mat = ownPlaymatUrl();
     if (mat) share('playmat', mat, 'playmat');
-    const sleeve = ownSleeve();
+    const sleeve = !lobby && ownSleeve();
     if (sleeve && sleeve.c) entries.push(['sleeve', sleeve.c, 'matte']);
     else if (sleeve) share('sleeve', directImageUrl(sleeve.u), 'sleeve');
     const chunks = [[]];
@@ -1702,7 +1758,7 @@
   }
 
   const validColor = (c) => typeof c === 'string' && /^#[0-9a-f]{6}$/i.test(c);
-  const sleeveImage = (s) => (s.c ? matteSleeve(s.c) : directImageUrl(s.u));
+  const sleeveImage = (s) => (s.c ? matteSleeve(s.c) : renderedUrl(directImageUrl(s.u), 'sleeve', false));
 
   function ownSleeve() {
     return (activeSleeve && sleeves.find(s => s.id === activeSleeve)) || null;
@@ -1762,6 +1818,7 @@
       return;
     }
     const url = sleeveImage(sleeve);
+    if (!url) return; // a tmpfiles sleeve still being fetched
     img.dataset.eaSleeve = url;
     if (src !== url) img.src = url;
     // A cropped image sleeve is a local file: share it through litterbox like local arts.
@@ -3037,7 +3094,7 @@
     }
     observer.observe(document.documentElement, {
       subtree: true, childList: true, attributes: true,
-      attributeFilter: ['src', 'data-ea-owner', 'data-ea-sleeve-owner', 'data-ea-local-player', 'data-ea-local-deck', 'data-ea-mana'],
+      attributeFilter: ['src', 'data-ea-owner', 'data-ea-sleeve-owner', 'data-ea-local-player', 'data-ea-local-deck', 'data-ea-phase', 'data-ea-mana'],
     });
     scanAll();
     scanPrintDialogs();
@@ -3045,19 +3102,24 @@
     applyPlaymats();
     applyMana();
     checkRoom();
-    setInterval(checkRoom, 1000);
+    const timers = [setInterval(() => { if (checkContext()) checkRoom(); }, 1000)];
     // Closing Settings removes nodes, which the observer above ignores; drop a stale preview here.
-    setInterval(() => { if (pendingChoices.size) scanCosmeticSettings(); }, 1000);
-    setInterval(shareLocalArts, 5 * 60 * 1000);
+    timers.push(setInterval(() => { if (pendingChoices.size) scanCosmeticSettings(); }, 1000));
+    timers.push(setInterval(shareLocalArts, 5 * 60 * 1000));
     let lang = EA_I18N.pick(siteLang());
     chrome.storage.local.set({ siteLang: lang });
-    setInterval(() => {
+    timers.push(setInterval(() => {
       const now = EA_I18N.pick(siteLang());
       if (now === lang) return;
       lang = now;
       chrome.storage.local.set({ siteLang: lang });
       refreshCustomViews();
-    }, 1000);
+    }, 1000));
+    shutDown = () => {
+      timers.forEach(clearInterval);
+      observer.disconnect();
+      stopSync();
+    };
     if (!data.hintCustomShown && onDeckPage()) {
       showHint();
       chrome.storage.local.set({ hintCustomShown: true });
