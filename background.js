@@ -175,15 +175,39 @@ function paintFoil(ctx, w, h) {
 // asData: always return a data URL, even when nothing changes. Playmats are CSS backgrounds,
 // which can't skip the Referer like <img referrerpolicy> does, and hosts like Scryfall or imgur
 // refuse hotlinks from edhplay; a data URL sidesteps that.
+// Generous timeout: playmats are big and litterbox can be slow; it only guards against a stuck
+// request. Anything but an image (an error or captcha page) fails here with a readable reason
+// instead of "The source image could not be decoded".
+async function fetchImage(url) {
+  const res = await fetch(url, { credentials: 'omit', signal: AbortSignal.timeout(120000) });
+  if (!res.ok) throw new Error(new URL(url).host + ' HTTP ' + res.status);
+  const blob = await res.blob();
+  // Some hosts send images as application/octet-stream, so only refuse what is clearly a page.
+  if (/^text\/|json|xml/i.test(blob.type) && !/svg/i.test(blob.type)) throw new Error(new URL(url).host + ' sent ' + blob.type.split(';')[0] + ', not an image');
+  return blob;
+}
+
 async function renderImage(url, width, foil, asData) {
   // A tmpfiles page link: fetch the image through it, and always hand back a copy (the page
   // itself can't be shown as an image).
+  let blob;
   if (TMPFILES_PAGE_RX.test(url)) {
-    url = await tmpfilesImageUrl(url);
     asData = true;
+    // The signed link sometimes answers with a page instead of the file (expired early, or
+    // tmpfiles throttling a burst of players). Get a fresh link and try once more.
+    for (let i = 1; ; i++) {
+      try {
+        blob = await fetchImage(await tmpfilesImageUrl(url));
+        break;
+      } catch (e) {
+        tmpfilesLinks.delete(url);
+        if (i >= 2) throw e;
+        await new Promise(r => setTimeout(r, 3000));
+      }
+    }
+  } else {
+    blob = await fetchImage(url);
   }
-  // Generous: playmats are big and litterbox can be slow; this only guards against a stuck request.
-  const blob = await (await fetch(url, { credentials: 'omit', signal: AbortSignal.timeout(120000) })).blob();
   const full = await createImageBitmap(blob);
   const shrink = width && full.width > width * 1.2;
   if (!shrink && !foil) {

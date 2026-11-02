@@ -809,6 +809,20 @@
   async function publishAll() {
     const s = sync;
     if (!s) return;
+    // Spectators have no cards on the table: they announce nothing of theirs, only that they are
+    // here, so the players upload their local files for them.
+    if (spectating()) {
+      if (lastPublished === 'spectator:' + s.topic) return;
+      try {
+        await send({ type: 'publish', url: `${serverUrl()}/${s.topic}`, body: JSON.stringify({ v: 1, c: clientId, p: null, r: Date.now(), i: 0, t: 1, e: [] }) });
+        lastPublished = 'spectator:' + s.topic;
+        lastPublishAt = syncStats.lastOk = Date.now();
+        syncStats.sent++;
+      } catch (e) {
+        publishFailed(e);
+      }
+      return;
+    }
     const lobby = inLobby();
     announcedPhase = lobby;
     if (phaseWait()) setTimeout(() => publishSoon(0), phaseWait() + 100); // look again once it's known
@@ -873,6 +887,8 @@
     syncStats.lastOk = Date.now();
     syncStats.lastError = null;
   }
+
+  const spectating = () => /^\/games\/[^/]+\/spectate/.test(location.pathname);
 
   function currentRoom() {
     const m = location.pathname.match(ROOM_RX);
@@ -2500,6 +2516,21 @@
     chrome.storage.local.set(changes);
   }, true);
 
+  // ---------- shadow on the commander tax and the mana pool ----------
+
+  // Both sit straight on the playmat, so a light or busy custom playmat washes them out. edhplay
+  // draws each as the first child of a container it marks itself: the command zone's card stack
+  // (the tax floats above it) and the hand zone (the mana pool floats over its left edge).
+  const COUNTER_SELECTORS = '[data-zone-stack="commandZone"] > :first-child, .hand-zone-container > :first-child';
+
+  function applyCounterShadow() {
+    if (document.getElementById('edhproxy-counter-style')) return;
+    const style = document.createElement('style');
+    style.id = 'edhproxy-counter-style';
+    style.textContent = `:is(${COUNTER_SELECTORS}) { filter: drop-shadow(0 1px 1px rgba(0,0,0,.95)) drop-shadow(0 0 3px rgba(0,0,0,.75)); }`;
+    document.head.append(style);
+  }
+
   // ---------- mana symbols instead of edhplay's letters (an option, off by default) ----------
 
   // page-owner.js marks each of edhplay's mana circles with data-ea-mana="<symbol>" while
@@ -3101,6 +3132,7 @@
     scanCosmeticSettings();
     applyPlaymats();
     applyMana();
+    applyCounterShadow();
     checkRoom();
     const timers = [setInterval(() => { if (checkContext()) checkRoom(); }, 1000)];
     // Closing Settings removes nodes, which the observer above ignores; drop a stale preview here.
