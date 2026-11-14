@@ -77,6 +77,10 @@ Choosing a different printing and confirming switches the card back to normal ar
 
 The popup (click the extension icon) shows whether you're in a room, what each player with the extension shares and when it last updated, your own side (when your arts last reached the room, local files uploading or waiting to retry) and a status dot for each service the extension uses (room, uploads, Scryfall, updates); hover one to see if it's working, slow or down, and lets you export/import your arts. **Manage arts** opens the manager, with three tabs. **Cards** is a grid of every card you uploaded arts for; click one to see its arts and the decks that use each (or "All decks"), and rename or delete them. **Playmats** and **Sleeves** list your custom ones, show which is in use, and let you rename or delete them. Search works on every tab. Deck names show up once you've opened My Decks or the deck with the extension on. Under **Extension** you can **Check for updates** right away or **Clear data** (deletes all your arts, foils, playmats and sleeves; your settings stay).
 
+### Change Set
+
+In a deck's options menu (the ⋮ next to its name), **Change Set** switches every card of the deck to its printing from one set, on edhplay itself (the same change as its Change Printing dialog, so everyone sees it, extension or not). Sets are listed by how many of the deck's cards they have; pick the version (regular, borderless, extended art, showcase) and whether basic lands change too. Cards that set doesn't have stay as they are. If some of the changed cards show a custom art in this deck, it asks whether to keep those proxies or replace them with the new printing.
+
 ### Manage Proxies
 
 On a deck page, **Manage Proxies** (between edhplay's Export and Import) opens a dialog with three buttons:

@@ -2761,6 +2761,28 @@
     .tile svg { width: 30px; height: 30px; }
     .tile.reset svg { color: #f87171; }
     .tile.export svg, .tile.import svg { color: #22d3ee; }
+    .sets { height: 260px; max-height: 40vh; overflow: auto; border-radius: 6px; background: rgba(255,255,255,.02);
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,.1); padding: 4px; }
+    .sets.locked { pointer-events: none; opacity: .6; }
+    .sets .row { display: flex; align-items: baseline; gap: 10px; padding: 7px 10px; border-radius: 4px; cursor: pointer; color: #e4e4e7; outline: none; }
+    .sets .row:hover, .sets .row:focus-visible { background: rgba(255,255,255,.06); }
+    .sets .row.sel { background: rgba(8,145,178,.22); box-shadow: inset 0 0 0 1px #0891b2; color: #fff; }
+    .sets .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .sets .meta { color: #71717a; font-size: 12px; white-space: nowrap; }
+    .sets .n { color: #22d3ee; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .sets .none { display: block; padding: 8px 10px; }
+    .opts { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+    .field { display: inline-flex; align-items: center; gap: 10px; color: #fafafa; font-weight: 500; }
+    select { height: 36px; background: #27272a; border: 1px solid rgba(255,255,255,.08); color: #e4e4e7; border-radius: 6px;
+      padding: 0 8px; font: inherit; outline: none; }
+    select:focus { border-color: #0891b2; }
+    .status { margin: 0; color: #d4d4d8; font-size: 13px; min-height: 1.5em; }
+    .status.busy { display: flex; align-items: center; gap: 10px; }
+    .spin { width: 16px; height: 16px; flex: none; border-radius: 50%; border: 2px solid rgba(255,255,255,.15); border-top-color: #22d3ee;
+      animation: ea-spin .8s linear infinite; }
+    @keyframes ea-spin { to { transform: rotate(360deg); } }
+    .bar { height: 6px; border-radius: 9999px; background: rgba(255,255,255,.08); overflow: hidden; }
+    .bar > span { display: block; height: 100%; width: 0; background: #0891b2; transition: width .2s; }
     .switch { display: inline-flex; align-items: center; gap: 12px; cursor: pointer; font-weight: 500; color: #fafafa; user-select: none; }
     .switch input { position: absolute; opacity: 0; pointer-events: none; }
     .track { width: 36px; height: 20px; border-radius: 9999px; background: #3f3f46; position: relative; transition: background-color .15s; flex: none; }
@@ -2778,6 +2800,49 @@
     button.danger-solid:hover { background: #b91c1c; }
     [hidden] { display: none !important; }
   `;
+
+  // ---------- Change Set helpers ----------
+
+  const isBasicLand = (c) => /\bBasic\b/.test(c.type_line || '');
+  const scryfallIdOf = (url) => ((url || '').match(/\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\./i) || [])[1] || null;
+
+  // A set's printings of one card, the chosen version first, then regular ones, lowest number first.
+  const VARIANT_ORDER = ['normal', 'borderless', 'extended', 'showcase', 'other'];
+  const printOrder = (prints, want) => [...prints].sort((a, b) => (a.v === want ? 0 : 1) - (b.v === want ? 0 : 1)
+    || VARIANT_ORDER.indexOf(a.v) - VARIANT_ORDER.indexOf(b.v)
+    || (parseInt(a.cn, 10) || 0) - (parseInt(b.cn, 10) || 0) || String(a.cn).localeCompare(String(b.cn)));
+
+  // edhplay's own API, through page-owner.js (it runs in the page, where the site's sign-in is).
+  let pageApiSeq = 0;
+  function pageApi(op, args) {
+    return new Promise((resolve, reject) => {
+      const id = 'ea' + (++pageApiSeq) + '-' + Math.random().toString(36).slice(2);
+      const done = () => { document.removeEventListener('edhpa-api-result', onResult); clearTimeout(timer); };
+      const onResult = (e) => {
+        let res;
+        try { res = JSON.parse(e.detail); } catch { return; }
+        if (!res || res.id !== id) return;
+        done();
+        if (res.error) reject(Object.assign(new Error(res.error), { status: res.status }));
+        else resolve(res.result);
+      };
+      const timer = setTimeout(() => { done(); reject(new Error('edhplay did not answer')); }, 30000);
+      document.addEventListener('edhpa-api-result', onResult);
+      document.dispatchEvent(new CustomEvent('edhpa-api', { detail: JSON.stringify({ id, op, args }) }));
+    });
+  }
+
+  // edhplay answers 429 when asked too fast; wait and try again.
+  async function withRetry(fn, tries = 4) {
+    for (let i = 1; ; i++) {
+      try {
+        return await fn();
+      } catch (e) {
+        if (i >= tries || (e.status && e.status !== 429 && e.status < 500)) throw e;
+        await new Promise(r => setTimeout(r, 1500 * i));
+      }
+    }
+  }
 
   const switchHtml = (cls, extra = '') => `<label class="switch ${extra}"><input type="checkbox" class="${cls}"><span class="track"></span><span class="label"></span></label>`;
 
@@ -2886,10 +2951,270 @@
         close();
       };
     }
-
     for (const type of ['keydown', 'keyup', 'keypress']) root.addEventListener(type, (e) => e.stopPropagation());
     document.documentElement.append(host);
     home();
+  }
+
+  // ---------- Change Set (deck options menu) ----------
+
+  // Every card of the deck to its printing from one set, on edhplay itself (the same change as its
+  // Change Printing dialog, card by card), so everyone sees it, extension or not. Sets are ranked
+  // by how many of the deck's cards they have; basic lands are left out of that count, as nearly
+  // every set has them. Cards showing a custom art here would hide the new printing, so it asks
+  // whether to drop those arts in this deck.
+  async function changeDeckSet(deck) {
+    const host = document.createElement('div');
+    const root = host.attachShadow({ mode: 'open' });
+    root.innerHTML = `<style>${PROXIES_DIALOG_CSS}</style>
+      <div class="backdrop"><div class="dialog" role="dialog" aria-modal="true">
+        <div class="head"><h2></h2><button class="x" type="button">✕</button></div>
+        <div class="body"></div>
+        <div class="foot"><button class="back" type="button"></button><button class="go" type="button"></button></div>
+      </div></div>`;
+    const $ = (sel) => root.querySelector(sel);
+    const body = $('.body'), go = $('.go'), back = $('.back');
+    let reloadOnClose = false; // printings changed: edhplay's page still shows the old ones
+    const close = () => {
+      host.remove();
+      document.removeEventListener('keydown', onKey, true);
+      if (reloadOnClose) location.reload();
+    };
+    const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
+    document.addEventListener('keydown', onKey, true);
+    $('.backdrop').addEventListener('click', (e) => { if (e.target === $('.backdrop')) close(); });
+    $('.x').onclick = close;
+    $('.x').title = t('cancel');
+    $('h2').textContent = t('mp_set');
+    back.textContent = t('cancel');
+    back.onclick = close;
+    go.className = 'primary go';
+    go.textContent = t('ss_pick');
+    go.disabled = true;
+    go.hidden = true;
+    body.innerHTML = '<p class="note"></p><p class="status busy"><span class="spin"></span><span class="text"></span></p>';
+    body.querySelector('.note').textContent = t('ss_note');
+    body.querySelector('.status .text').textContent = t('ss_loading');
+    for (const type of ['keydown', 'keyup', 'keypress']) root.addEventListener(type, (e) => e.stopPropagation());
+    document.documentElement.append(host);
+
+    let cards, sets;
+    try {
+      cards = (await pageApi('deck', { deckId: deck })).filter(c => c.card_print_id && c.zone !== 'token');
+      const names = [...new Set(cards.filter(c => !isBasicLand(c)).map(c => c.name))];
+      ({ sets } = await send({ type: 'setPrintings', names }));
+    } catch (e) {
+      const status = body.querySelector('.status');
+      status.classList.remove('busy');
+      status.textContent = t('ss_error', { msg: e.message });
+      return;
+    }
+    if (!host.isConnected) return;
+    go.hidden = false;
+    const total = new Set(cards.filter(c => !isBasicLand(c)).map(c => c.name.toLowerCase())).size;
+    for (const s of sets) s.n = cards.filter(c => !isBasicLand(c) && s.cards[c.name.toLowerCase()]).length;
+    sets = sets.filter(s => s.n).sort((a, b) => b.n - a.n || b.released.localeCompare(a.released));
+
+    body.innerHTML = `<p class="note"></p><input type="text" class="search"><div class="sets" role="listbox"></div>
+      <div class="opts"><label class="field"><span></span><select class="variant"></select></label>${switchHtml('basics')}</div>
+      <p class="status"></p>`;
+    body.querySelector('.note').textContent = t('ss_note');
+    const search = body.querySelector('.search'), list = body.querySelector('.sets');
+    const variant = body.querySelector('.variant'), basics = body.querySelector('.basics');
+    search.placeholder = t('ss_search');
+    body.querySelector('.field span').textContent = t('ss_variant');
+    for (const v of ['normal', 'borderless', 'extended', 'showcase']) variant.append(new Option(t('ss_v_' + v), v));
+    body.querySelector('.switch .label').textContent = t('ss_basics');
+    basics.checked = true;
+
+    let chosen = null;
+    const basicPrints = new Map(); // set code -> its basic lands, as setPrintings gives them (or a promise)
+
+    // The deck cards that change, each with Scryfall's printings of it in the set, best first.
+    function plan() {
+      if (!chosen) return [];
+      const basicSet = basics.checked && basicPrints.get(chosen.code);
+      const out = [];
+      for (const c of cards) {
+        const from = isBasicLand(c) ? (basicSet && basicSet.cards && basicSet.cards[c.name.toLowerCase()]) : chosen.cards[c.name.toLowerCase()];
+        if (!from) continue;
+        const order = printOrder(from, variant.value);
+        if (scryfallIdOf(c.front_image_uri) === order[0].id) continue; // already that printing
+        out.push({ card: c, order });
+      }
+      return out;
+    }
+
+    const update = () => {
+      const n = plan().length;
+      go.disabled = !chosen || !n;
+      go.textContent = chosen ? t('ss_go', { n }) : t('ss_pick');
+    };
+
+    function select(s) {
+      chosen = s;
+      for (const row of list.children) row.classList.toggle('sel', row.set === s);
+      update();
+      if (basics.checked && !basicPrints.has(s.code)) {
+        const loading = send({ type: 'setPrintings', query: `set:${s.code} t:basic` })
+          .then(({ sets: found }) => { basicPrints.set(s.code, found[0] || {}); })
+          .catch(() => { basicPrints.delete(s.code); });
+        basicPrints.set(s.code, loading);
+        loading.then(update);
+      }
+    }
+
+    function render() {
+      const q = search.value.trim().toLowerCase();
+      list.replaceChildren();
+      for (const s of sets) {
+        if (q && !s.name.toLowerCase().includes(q) && s.code !== q) continue;
+        const row = document.createElement('div');
+        row.className = 'row' + (s === chosen ? ' sel' : '');
+        row.role = 'option';
+        row.tabIndex = 0;
+        row.set = s;
+        row.innerHTML = '<span class="name"></span><span class="meta"></span><span class="n"></span>';
+        row.querySelector('.name').textContent = s.name;
+        row.querySelector('.meta').textContent = `${s.code.toUpperCase()} · ${s.released.slice(0, 4)}`;
+        row.querySelector('.n').textContent = t('ss_count', { n: s.n, total });
+        row.onclick = () => select(s);
+        row.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); select(s); } };
+        list.append(row);
+      }
+      if (!list.children.length) list.append(Object.assign(document.createElement('span'), { className: 'none', textContent: t('ss_none') }));
+    }
+    render();
+    search.addEventListener('input', render);
+    variant.onchange = update;
+    basics.onchange = () => { if (chosen) select(chosen); else update(); };
+    search.focus();
+
+    // Face names of a card that show a custom art in this deck.
+    function proxiedFaces(card) {
+      const sid = scryfallIdOf(card.front_image_uri);
+      return card.name.split(' // ').filter((face, i) => ownArtFor(`id:${sid}/${i ? 'back' : 'front'}`, 'name:' + face.toLowerCase(), deck));
+    }
+
+    go.onclick = () => {
+      const todo = plan();
+      const proxied = todo.filter(({ card }) => proxiedFaces(card).length);
+      if (!proxied.length) { run(todo, false); return; }
+      // Ask first: keep the custom arts (the new printing only shows to players without the
+      // extension) or drop them in this deck.
+      body.innerHTML = '<p class="note"></p><div class="list"></div><p class="status"></p>';
+      body.querySelector('.note').textContent = t('ss_proxyAsk', { n: proxied.length });
+      body.querySelector('.list').textContent = proxied.map(({ card }) => card.name).sort((a, b) => a.localeCompare(b)).join('\n');
+      back.textContent = t('ss_keepProxies');
+      back.onclick = () => run(todo, false);
+      go.textContent = t('ss_replaceProxies');
+      go.onclick = () => run(todo, true);
+    };
+
+    async function run(todo, replaceArts) {
+      const status = body.querySelector('.status');
+      const setName = chosen.name.toLowerCase();
+      for (const el of body.querySelectorAll('input, select')) el.disabled = true;
+      list.classList.add('locked');
+      go.hidden = true;
+      back.hidden = true;
+      status.classList.add('busy');
+      status.innerHTML = '<span class="spin"></span><span class="text"></span>';
+      const text = status.querySelector('.text');
+      const bar = Object.assign(document.createElement('div'), { className: 'bar' });
+      bar.append(document.createElement('span'));
+      status.after(bar);
+      let done = 0, ok = 0, missing = 0, failed = 0;
+      const dropArts = [];
+      const progress = () => {
+        text.textContent = t('ss_progress', { i: done, n: todo.length });
+        bar.firstChild.style.width = (todo.length ? (100 * done / todo.length) : 100) + '%';
+      };
+      progress();
+      const one = async ({ card, order }) => {
+        try {
+          // edhplay has its own ids for printings; find ours among its printings of the card.
+          const prints = (await pageApi('printings', { cardPrintId: card.card_print_id, setName: chosen.name }))
+            .filter(p => !p.set_name || p.set_name.toLowerCase() === setName);
+          const byScryfall = new Map(prints.map(p => [scryfallIdOf(p.front_image_uri), p]));
+          const match = order.map(o => byScryfall.get(o.id)).find(Boolean);
+          if (!match) missing++;
+          else {
+            const faces = replaceArts ? proxiedFaces(card) : [];
+            if (match.id !== card.card_print_id) {
+              await withRetry(() => pageApi('setPrinting', { deckId: deck, zone: card.zone, cardPrintId: card.card_print_id, newPrintId: match.id }));
+              reloadOnClose = true;
+            }
+            dropArts.push(...faces);
+            ok++;
+          }
+        } catch (e) {
+          console.warn('[EDHProxy] change set failed for', card.name, e);
+          failed++;
+        }
+        done++;
+        progress();
+      };
+      // A few at a time: quicker than one by one, without flooding edhplay.
+      const queue = [...todo];
+      await Promise.all([1, 2, 3].map(async () => { while (queue.length) await one(queue.shift()); }));
+      // This deck shows the printing's own art again for those cards; other decks keep theirs.
+      for (const face of dropArts) await activateArt(face, null, false);
+      if (dropArts.length) reloadOnClose = true;
+      bar.remove();
+      status.classList.remove('busy');
+      status.textContent = [t('ss_done', { n: ok }), missing ? t('ss_missing', { n: missing }) : '', failed ? t('ss_failed', { n: failed }) : ''].filter(Boolean).join(' ');
+      go.textContent = t('ss_reload');
+      go.disabled = false;
+      go.hidden = false;
+      go.onclick = () => { reloadOnClose = true; close(); };
+    }
+  }
+
+  // The deck's own options menu (the ⋮ next to the deck name: Move to, Clone deck, Copy Link,
+  // Delete...) gets a "Change Set" item. edhplay opens it at the click position, not tied to a
+  // button, so it is recognised by its shape when it appears: a menu with a separator right
+  // before its last item (Delete) and no keyboard shortcuts (the card menus all show some).
+  new MutationObserver((mutations) => {
+    if (!/^\/decks\/[0-9a-f-]{36}/i.test(location.pathname)) return;
+    for (const m of mutations) {
+      for (const n of m.addedNodes) {
+        if (n.nodeType === 1 && (n.matches('[role="menu"]') || n.querySelector('[role="menu"]'))) {
+          for (const wait of [0, 120]) setTimeout(scanDeckMenus, wait);
+          return;
+        }
+      }
+    }
+  }).observe(document.documentElement, { childList: true, subtree: true });
+
+  function scanDeckMenus() {
+    const deck = location.pathname.match(/^\/decks\/([0-9a-f-]{36})/i);
+    if (!deck) return;
+    for (const menu of document.querySelectorAll('[role="menu"]')) {
+      if (menu.querySelector('[data-ea-set-item]') || menu.querySelector('kbd')) continue;
+      const separator = [...menu.querySelectorAll('[role="separator"]')].pop();
+      const last = separator && separator.nextElementSibling;
+      const template = separator && separator.previousElementSibling;
+      if (!last || last.nextElementSibling || !template || template.getAttribute('role') !== 'menuitem') continue;
+
+      const item = template.cloneNode(true);
+      item.dataset.eaSetItem = '1';
+      item.id = 'edhproxy-change-set';
+      item.dataset.value = 'edhproxy-change-set';
+      item.removeAttribute('data-highlighted');
+      item.removeAttribute('aria-haspopup');
+      item.textContent = t('mp_set');
+      item.addEventListener('pointerenter', () => item.setAttribute('data-highlighted', ''));
+      item.addEventListener('pointerleave', () => item.removeAttribute('data-highlighted'));
+      for (const type of ['pointerdown', 'pointerup', 'mousedown', 'mouseup']) item.addEventListener(type, (e) => e.stopPropagation());
+      item.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        menu.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        changeDeckSet(deck[1]).catch((err) => showToast(t('ss_error', { msg: err.message })));
+      });
+      menu.insertBefore(item, separator);
+    }
   }
 
   // ---------- foil toggle on deck pages: card menu item and the F key ----------

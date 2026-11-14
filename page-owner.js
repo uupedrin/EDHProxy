@@ -134,6 +134,64 @@
     }
   }
 
+  // edhplay's own API client, for content.js's Change Set (a deck's printings, one card at a time,
+  // as its Change Printing dialog does). Going through it keeps the site's sign-in and token
+  // refresh. The client is a set of service classes in the main bundle; find them by method.
+  let api = null;
+  async function edhplayApi() {
+    if (api) return api;
+    const urls = new Set([...performance.getEntriesByType('resource').map(r => r.name), ...[...document.scripts].map(s => s.src)]);
+    const has = (fn, text) => typeof fn === 'function' && Function.prototype.toString.call(fn).includes(text);
+    for (const url of urls) {
+      if (!/\/assets\/index-[\w-]+\.js$/.test(url)) continue;
+      let mod;
+      try { mod = await import(url); } catch { continue; }
+      const found = {};
+      for (const v of Object.values(mod)) {
+        if (!v || typeof v !== 'function') continue;
+        if (has(v.updateDeckCard, '/api/v1/decks/') && has(v.getDeck, '/api/v1/decks/')) found.decks = v;
+        if (has(v.listAlternativePrintings, '/api/v1/cards/prints/')) found.cards = v;
+      }
+      if (found.decks && found.cards) return (api = found);
+    }
+    throw new Error('edhplay API not found');
+  }
+
+  const API_OPS = {
+    // The deck's cards: [{ deck_card_id, zone, card_print_id, name, type_line, front_image_uri, ... }]
+    deck: async ({ deckId }) => (await (await edhplayApi()).decks.getDeck({ deckId })).cards,
+    // edhplay's printings of a card in one set: [{ id, front_image_uri, set_name, ... }]
+    printings: async ({ cardPrintId, setName }) => {
+      const out = [];
+      for (let page = 1; page <= 10; page++) {
+        const res = await (await edhplayApi()).cards.listAlternativePrintings({ cardPrintId, setName, page, pageSize: 50 });
+        out.push(...(res.data || []));
+        if (!res.has_more) break;
+      }
+      return out;
+    },
+    setPrinting: async ({ deckId, zone, cardPrintId, newPrintId }) => {
+      await (await edhplayApi()).decks.updateDeckCard({ deckId, zone, cardPrintId, requestBody: { card_print_id: newPrintId } });
+      return true;
+    },
+  };
+
+  // content.js asks with an "edhpa-api" event and gets an "edhpa-api-result" back, both carrying
+  // JSON text (objects don't cross from one world to the other).
+  document.addEventListener('edhpa-api', async (e) => {
+    let req;
+    try { req = JSON.parse(e.detail); } catch { return; }
+    const answer = (body) => document.dispatchEvent(new CustomEvent('edhpa-api-result', { detail: JSON.stringify({ id: req.id, ...body }) }));
+    const op = API_OPS[req.op];
+    if (!op) return answer({ error: 'unknown op' });
+    try {
+      answer({ result: await op(req.args || {}) });
+    } catch (err) {
+      const status = err && err.status ? ' (HTTP ' + err.status + ')' : '';
+      answer({ error: String((err && err.message) || err).slice(0, 200) + status, status: err && err.status });
+    }
+  });
+
   function setRootData(key, value) {
     const root = document.documentElement;
     if (value) {

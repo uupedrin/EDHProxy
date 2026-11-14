@@ -317,6 +317,62 @@ chrome.storage.local.get('update').then(({ update }) => {
   showUpdateBadge(update && isNewer(update.version, chrome.runtime.getManifest().version) ? update : null);
 });
 
+// ---------- Change Set: which sets have printings of a deck's cards ----------
+
+// Scryfall's search, every page, with the pause it asks for between requests.
+async function scryfallSearch(q) {
+  const out = [];
+  let url = 'https://api.scryfall.com/cards/search?unique=prints&order=set&q=' + encodeURIComponent(q);
+  for (let page = 0; url && page < 40; page++) {
+    if (page) await new Promise(r => setTimeout(r, 120));
+    const res = await trackedFetch('scryfall', url, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(20000) });
+    if (res.status === 404) break; // no match at all
+    if (!res.ok) throw new Error('Scryfall HTTP ' + res.status);
+    const data = await res.json();
+    out.push(...(data.data || []));
+    url = data.has_more ? data.next_page : null;
+  }
+  return out;
+}
+
+// What a printing looks like, to pick one among several in the same set.
+function printVariant(c) {
+  const fx = c.frame_effects || [];
+  if (fx.includes('extendedart')) return 'extended';
+  if (c.border_color === 'borderless') return 'borderless';
+  if (fx.includes('showcase')) return 'showcase';
+  if (c.promo || c.full_art || c.textless) return 'other';
+  return 'normal';
+}
+
+// Every paper printing of these cards, grouped by set:
+//   [{ code, name, released, cards: { "<lowercase name>": [{ id, cn, v }] } }]
+// "query" is the search filter for one batch (names joined with "or"), or a whole query.
+async function setPrintings(names, query) {
+  const batches = [];
+  if (query) batches.push(query);
+  // Scryfall refuses queries much past 1000 characters.
+  let cur = [];
+  for (const n of names || []) {
+    const term = `!"${String(n).replace(/"/g, '')}"`;
+    if (cur.length && [...cur, term].join(' or ').length > 900) { batches.push(cur.join(' or ')); cur = []; }
+    cur.push(term);
+  }
+  if (cur.length) batches.push(cur.join(' or '));
+  const sets = new Map();
+  for (const [i, b] of batches.entries()) {
+    if (i) await new Promise(r => setTimeout(r, 120));
+    for (const c of await scryfallSearch(`(${b}) game:paper`)) {
+      if (/^(token|double_faced_token|art_series|emblem)$/.test(c.layout)) continue;
+      const s = sets.get(c.set) || { code: c.set, name: c.set_name, released: c.released_at || '', cards: {} };
+      sets.set(c.set, s);
+      const key = c.name.toLowerCase();
+      (s.cards[key] || (s.cards[key] = [])).push({ id: c.id, cn: c.collector_number, v: printVariant(c) });
+    }
+  }
+  return [...sets.values()];
+}
+
 chrome.alarms.create('files', { periodInMinutes: 1 });
 chrome.alarms.create('update', { periodInMinutes: 360 });
 chrome.alarms.onAlarm.addListener((alarm) => {
@@ -341,7 +397,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       else if (msg.type === 'publish') sendResponse({ ok: await publish(msg.url, msg.body) });
       else if (msg.type === 'litterbox') sendResponse({ ok: true, url: await hostFile(msg.dataUrl) });
       else if (msg.type === 'checkUpdate') sendResponse({ ok: true, ...(await checkForUpdate()) });
-      else if (msg.type === 'render') sendResponse({ ok: true, url: await renderImage(msg.url, msg.width, msg.foil, msg.asData) });
+      else if (msg.type === 'setPrintings') sendResponse({ ok: true, sets: await setPrintings(msg.names, msg.query) });
+      else if (msg.type === 'render')sendResponse({ ok: true, url: await renderImage(msg.url, msg.width, msg.foil, msg.asData) });
       else sendResponse({ ok: false, error: 'unknown message' });
     } catch (e) {
       sendResponse({ ok: false, error: String(e && e.message || e) });
